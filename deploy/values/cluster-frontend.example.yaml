@@ -1,0 +1,56 @@
+# Frontend cluster overlay: frontend only.
+
+frontend:
+  enabled: true
+  replicaCount: 3
+  nodeSelector:
+    agentpool: frontendpool
+  tolerations:
+    - key: dedicated
+      operator: Equal
+      value: frontend
+      effect: NoSchedule
+  affinity:
+    podAntiAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        - topologyKey: kubernetes.io/hostname
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/component: frontend
+  resources:
+    requests:
+      cpu: 500m
+      memory: 1024Mi
+    limits:
+      cpu: 1000m
+      memory: 2048Mi
+
+services:
+  enabled: false
+
+redis:
+  enabled: false
+
+nats:
+  enabled: false
+
+db:
+  enabled: false
+
+ingress:
+  frontend:
+    enabled: true
+    className: nginx
+    annotations:
+      cert-manager.io/cluster-issuer: letsencrypt-prod
+    hosts:
+      - host: frontend.example.com
+        paths:
+          - path: /
+            pathType: Prefix
+    tls:
+      - hosts:
+          - frontend.example.com
+        secretName: okareo-le-tls-frontend
+  services:
+    enabled: false

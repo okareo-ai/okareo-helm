@@ -1,0 +1,96 @@
+# Runtime application values for Okareo standalone.
+# Keep this file focused on app/runtime wiring (not node pools or provider-specific infra settings).
+
+images:
+  frontend:
+    tag: v0.0.23
+  services:
+    tag: v0.0.28
+
+secrets:
+  create: false
+  existingSecretName: okareo-app-secrets
+
+services:
+  runtimeSecrets:
+    source: secretKeyRef
+  # Optional OIDC SSO settings for backend services:
+  # extraEnv:
+  #   - name: OKAREO_STANDALONE_AUTH_MODE
+  #     value: sso
+  #   - name: SSO_ISSUER_URL
+  #     value: https://<OIDC_ISSUER_URL>
+  #   - name: SSO_CLIENT_ID
+  #     value: <OIDC_CLIENT_ID>
+  #   - name: SSO_SCOPES
+  #     value: openid email profile
+  #   - name: SSO_SESSION_MAX_SEC
+  #     value: "172800"
+  #   - name: SSO_ALLOWED_CLAIM
+  #     value: groups
+  #   - name: SSO_ALLOWED_VALUES
+  #     value: okareo-users,okareo-admins
+  # Custom endpoint TLS verification defaults to enabled.
+  # Dev-only self-signed escape hatch (temporary):
+  # extraEnv:
+  #   - name: OKAREO_CUSTOM_ENDPOINT_SSL_VERIFY
+  #     value: "false"
+  #   - name: VERIFY_CUSTOM_ENDPOINT_SSL_CERT
+  #     value: "false"
+
+frontend:
+  # Optional OIDC SSO setting for frontend:
+  # extraEnv:
+  #   - name: OKAREO_STANDALONE_AUTH_MODE
+  #     value: sso
+  extraEnv: []
+  extraEnvFrom: []
+
+config:
+  frontendTenantsJson: '[{"id":"<TENANT_ID>","name":"<DISPLAY_NAME>","token":"<OKAREO_AIRGAP_TOKEN>"}]'
+  servicesTenantsJson: '[{"id":"<TENANT_ID>","name":"<DISPLAY_NAME>"}]'
+  evalModelName: "azure/<your-evaluator-deployment-name>"
+  embeddingModelName: "azure/<your-embedding-deployment-name>"
+  taskListenerEnabled: "true"
+  traceThreadPoolSize: "4"
+  disableTelemetry: true
+  okareoApiGateway: ""
+  okareoAppDomain: ""
+
+nats:
+  external:
+    enabled: true
+    # Leave blank to allow deploy workflow fallback where available.
+    url: ""
+  server:
+    # Internal backend URL when using external NATS release.
+    url: "nats://okareo-nats:4222"
+
+redis:
+  external:
+    # Internal backend host when using external Redis HA release.
+    host: "okareo-redis-ha-rw"
+    port: 6379
+
+modelConfig:
+  modelJson: |
+    {
+      "evaluation_models": [
+        {
+          "provider": "azure",
+          "model_name": "azure/<your-evaluator-deployment-name>",
+          "api_key": "EVAL_API_KEY",
+          "api_base": "https://<AZURE_RESOURCE_NAME>.openai.azure.com/",
+          "api_version": "2024-02-01"
+        }
+      ],
+      "embedding_models": [
+        {
+          "provider": "azure",
+          "model_name": "azure/<your-embedding-deployment-name>",
+          "api_key": "EVAL_API_KEY",
+          "api_base": "https://<AZURE_RESOURCE_NAME>.openai.azure.com/",
+          "api_version": "2024-02-01"
+        }
+      ]
+    }

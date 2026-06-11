@@ -1,0 +1,30 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "okareo-standalone.fullname" . }}-config
+  labels:
+    {{- include "okareo-standalone.labels" . | nindent 4 }}
+data:
+  FRONTEND_TENANTS_JSON: {{ .Values.config.frontendTenantsJson | quote }}
+  SERVICES_TENANTS_JSON: {{ .Values.config.servicesTenantsJson | quote }}
+  AIRGAP_NATS_URL: {{ include "okareo-standalone.airgapNatsUrl" . | quote }}
+  EVAL_MODEL_NAME: {{ .Values.config.evalModelName | quote }}
+  EMBEDDING_MODEL_NAME: {{ .Values.config.embeddingModelName | quote }}
+  AIRGAP_ONLY: {{ .Values.config.airgapOnly | quote }}
+  DISABLE_TELEMETRY: {{ ternary "1" "" .Values.config.disableTelemetry | quote }}
+  TASK_LISTENER_ENABLED: {{ .Values.config.taskListenerEnabled | quote }}
+  TRACE_THREAD_POOL_SIZE: {{ .Values.config.traceThreadPoolSize | quote }}
+  OKAREO_API_GATEWAY: {{ .Values.config.okareoApiGateway | quote }}
+  OKAREO_APP_DOMAIN: {{ .Values.config.okareoAppDomain | quote }}
+---
+{{- if .Values.modelConfig.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "okareo-standalone.fullname" . }}-model-config
+  labels:
+    {{- include "okareo-standalone.labels" . | nindent 4 }}
+data:
+  model.json: |
+{{- .Values.modelConfig.modelJson | nindent 4 }}
+{{- end }}

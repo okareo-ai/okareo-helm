@@ -1,0 +1,23 @@
+# Single-release app deployment with external Redis HA + external NATS.
+# (frontend disabled; services only)
+
+frontend:
+  enabled: false
+
+services:
+  enabled: true
+  replicaCount: 2
+
+redis:
+  enabled: false
+  external:
+    host: okareo-redis-ha-rw
+    port: 6379
+
+nats:
+  enabled: false
+  server:
+    url: nats://okareo-nats:4222
+
+db:
+  enabled: false

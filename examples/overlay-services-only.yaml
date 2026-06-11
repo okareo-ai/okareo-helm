@@ -1,0 +1,33 @@
+# Split-release backend deployment (services release only).
+
+frontend:
+  enabled: false
+
+services:
+  enabled: true
+  replicaCount: 2
+  service:
+    type: LoadBalancer
+
+redis:
+  enabled: false
+  external:
+    host: okareo-redis-ha-rw
+    port: 6379
+
+nats:
+  enabled: false
+  server:
+    url: nats://okareo-nats:4222
+  # Avoid ownership conflict with legacy/sibling releases during migration.
+  aliasService:
+    enabled: false
+
+db:
+  enabled: false
+
+ingress:
+  frontend:
+    enabled: false
+  services:
+    enabled: false

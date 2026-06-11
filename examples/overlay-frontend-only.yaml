@@ -1,0 +1,38 @@
+# Split-release frontend deployment (frontend release only).
+
+frontend:
+  enabled: true
+  replicaCount: 2
+
+services:
+  enabled: false
+
+redis:
+  enabled: false
+
+nats:
+  enabled: false
+  # Avoid ownership conflict with legacy/sibling releases during migration.
+  aliasService:
+    enabled: false
+
+db:
+  enabled: false
+
+ingress:
+  frontend:
+    enabled: true
+    className: nginx
+    annotations:
+      cert-manager.io/cluster-issuer: letsencrypt-prod
+    hosts:
+      - host: frontend.example.com
+        paths:
+          - path: /
+            pathType: Prefix
+    tls:
+      - hosts:
+          - frontend.example.com
+        secretName: okareo-le-tls-frontend
+  services:
+    enabled: false

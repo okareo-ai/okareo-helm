@@ -1,0 +1,55 @@
+# Backend cluster overlay: services only from Okareo chart.
+# Deploy Redis HA and NATS as separate Helm releases.
+
+frontend:
+  enabled: false
+
+services:
+  enabled: true
+  replicaCount: 4
+  service:
+    type: LoadBalancer
+  nodeSelector:
+    agentpool: servicepool
+  tolerations:
+    - key: dedicated
+      operator: Equal
+      value: backend
+      effect: NoSchedule
+  affinity:
+    podAntiAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        - topologyKey: kubernetes.io/hostname
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/component: services
+  resources:
+    requests:
+      cpu: 6000m
+      memory: 28000Mi
+    limits:
+      cpu: 7000m
+      memory: 30000Mi
+
+redis:
+  enabled: false
+  external:
+    host: okareo-redis-ha-rw
+    port: 6379
+
+nats:
+  enabled: false
+  external:
+    enabled: true
+    url: ""
+  server:
+    url: nats://okareo-nats:4222
+
+db:
+  enabled: false
+
+ingress:
+  frontend:
+    enabled: false
+  services:
+    enabled: false

@@ -1,0 +1,58 @@
+# Generic ingress-first overlay for shared FE/BE HTTPS termination.
+
+frontend:
+  service:
+    type: ClusterIP
+
+services:
+  service:
+    type: ClusterIP
+
+nats:
+  service:
+    type: ClusterIP
+    port: 4222
+  server:
+    url: "nats://nats:4222"
+  external:
+    enabled: true
+    # Leave blank to allow deploy workflow fallback where available.
+    url: ""
+
+ingress:
+  frontend:
+    enabled: true
+    className: nginx
+    annotations:
+      nginx.ingress.kubernetes.io/ssl-redirect: "true"
+      nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+    hosts:
+      - host: ""
+        paths:
+          - path: /
+            pathType: Prefix
+    tls:
+      - secretName: okareo-tls
+
+  services:
+    enabled: true
+    className: nginx
+    annotations:
+      nginx.ingress.kubernetes.io/ssl-redirect: "true"
+      nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+      nginx.ingress.kubernetes.io/proxy-connect-timeout: "30"
+      nginx.ingress.kubernetes.io/proxy-send-timeout: "300"
+      nginx.ingress.kubernetes.io/proxy-read-timeout: "7200"
+    hosts:
+      - host: ""
+        paths:
+          - path: /v0
+            pathType: Prefix
+          - path: /auth
+            pathType: Prefix
+          - path: /docs
+            pathType: Prefix
+          - path: /openapi.json
+            pathType: Prefix
+    tls:
+      - secretName: okareo-tls

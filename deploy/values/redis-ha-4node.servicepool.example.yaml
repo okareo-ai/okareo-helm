@@ -1,0 +1,54 @@
+# Internal Redis HA chart overlay for 4-node servicepool placement.
+
+replicaCount: 4
+
+service:
+  readWrite:
+    type: ClusterIP
+    port: 6379
+  sentinel:
+    type: ClusterIP
+    port: 26379
+
+persistence:
+  enabled: true
+  size: 8Gi
+
+resources:
+  redis:
+    requests:
+      cpu: 200m
+      memory: 256Mi
+    limits:
+      cpu: 800m
+      memory: 1024Mi
+  sentinel:
+    requests:
+      cpu: 50m
+      memory: 96Mi
+    limits:
+      cpu: 200m
+      memory: 256Mi
+
+sentinel:
+  quorum: 3
+  downAfterMs: 10000
+  failoverTimeoutMs: 180000
+  parallelSyncs: 1
+
+nodeSelector:
+  agentpool: servicepool
+
+tolerations:
+  - key: dedicated
+    operator: Equal
+    value: backend
+    effect: NoSchedule
+
+affinity:
+  podAntiAffinity:
+    requiredDuringSchedulingIgnoredDuringExecution:
+      - topologyKey: kubernetes.io/hostname
+        labelSelector:
+          matchLabels:
+            app.kubernetes.io/name: okareo-redis-ha

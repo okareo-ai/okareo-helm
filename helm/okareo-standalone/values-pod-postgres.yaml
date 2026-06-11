@@ -1,0 +1,8 @@
+db:
+  enabled: true
+
+secrets:
+  dbUser: postgres
+  dbName: okareo_db
+  databaseUrl: ""
+  tenantDb: ""

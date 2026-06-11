@@ -1,0 +1,301 @@
+nameOverride: ""
+fullnameOverride: ""
+
+imagePullSecrets: []
+
+images:
+  frontend:
+    repository: okareoartifacts/appfront
+    tag: v0.0.22
+    pullPolicy: IfNotPresent
+  services:
+    repository: okareoartifacts/appservices
+    tag: v0.0.27
+    pullPolicy: IfNotPresent
+  db:
+    repository: postgres
+    tag: "16.1"
+    pullPolicy: IfNotPresent
+  redis:
+    repository: redis
+    tag: 7.2-bookworm
+    pullPolicy: IfNotPresent
+  nats:
+    repository: nats
+    tag: "2.10"
+    pullPolicy: IfNotPresent
+
+serviceAccount:
+  create: false
+  name: ""
+
+ingress:
+  frontend:
+    enabled: true
+    className: nginx
+    annotations:
+      nginx.ingress.kubernetes.io/ssl-redirect: "true"
+      nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+    hosts:
+      - host: ""
+        paths:
+          - path: /
+            pathType: Prefix
+    tls: []
+  services:
+    enabled: true
+    className: nginx
+    annotations:
+      nginx.ingress.kubernetes.io/ssl-redirect: "true"
+      nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+      nginx.ingress.kubernetes.io/proxy-connect-timeout: "30"
+      nginx.ingress.kubernetes.io/proxy-send-timeout: "300"
+      nginx.ingress.kubernetes.io/proxy-read-timeout: "7200"
+    hosts:
+      - host: ""
+        paths:
+          - path: /v0
+            pathType: Prefix
+          - path: /auth
+            pathType: Prefix
+          - path: /docs
+            pathType: Prefix
+          - path: /openapi.json
+            pathType: Prefix
+    tls: []
+
+crossClusterApi:
+  enabled: false
+  # Service name rendered in this release namespace and used by ingress.services backend.
+  serviceName: okareo-api-external
+  servicePort: 8000
+  # Backend API LB IP from backend cluster (required when enabled=true).
+  endpointIP: ""
+
+crossClusterNats:
+  enabled: false
+  # Service name rendered in this release namespace.
+  serviceName: okareo-nats-external
+  servicePort: 4222
+  # Backend NATS LB IP from backend cluster (required when enabled=true).
+  endpointIP: ""
+
+ingressNginxTcp:
+  enabled: false
+  # Namespace where ingress-nginx tcp-services ConfigMap should be created.
+  namespace: ingress-nginx
+  configMapName: tcp-services
+  services:
+    enabled: true
+    className: nginx
+    annotations:
+      nginx.ingress.kubernetes.io/ssl-redirect: "true"
+      nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+      nginx.ingress.kubernetes.io/proxy-connect-timeout: "30"
+      nginx.ingress.kubernetes.io/proxy-send-timeout: "300"
+      nginx.ingress.kubernetes.io/proxy-read-timeout: "7200"
+    hosts:
+      - host: ""
+        paths:
+          - path: /v0
+            pathType: Prefix
+          - path: /auth
+            pathType: Prefix
+          - path: /docs
+            pathType: Prefix
+          - path: /openapi.json
+            pathType: Prefix
+    tls: []
+
+frontend:
+  enabled: true
+  replicaCount: 1
+  service:
+    type: ClusterIP
+    port: 3000
+  resources: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  extraEnv: []
+  extraEnvFrom: []
+  extraVolumeMounts: []
+  extraVolumes: []
+
+services:
+  enabled: true
+  replicaCount: 1
+  airgapWebhookNotificationsEnabled: true
+  strategy:
+    # Avoid rollout deadlocks on small pools when services anti-affinity is enforced.
+    # With maxSurge=0, replacements happen one-for-one instead of creating a third pod first.
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 0
+      maxUnavailable: 1
+  service:
+    type: ClusterIP
+    port: 8000
+  podAnnotations: {}
+  command:
+    - bash
+    - -c
+  args:
+    - >-
+      alembic upgrade head &&
+      python3 ./.init/add_tenant_info.py &&
+      uvicorn app.main:app --host 0.0.0.0 --port 8000 --timeout-keep-alive 3600 --ws-ping-interval 300 --ws-ping-timeout 300 --workers 9
+  startupScript: >-
+    alembic upgrade head &&
+    python3 ./.init/add_tenant_info.py &&
+    uvicorn app.main:app --host 0.0.0.0 --port 8000 --timeout-keep-alive 3600 --ws-ping-interval 300 --ws-ping-timeout 300 --workers 9
+  runtimeSecrets:
+    # secretKeyRef (default): inject env vars from Kubernetes Secret
+    # envFile: source env vars from a mounted file (e.g. sidecar-based secrets platform)
+    source: secretKeyRef
+    # Used only when source=envFile
+    envFilePath: /var/run/runtime-secrets/okareo.env
+    waitForFileSeconds: 300
+  resources:
+    requests:
+      cpu: 6000m
+      memory: 28000Mi
+    limits:
+      cpu: 7000m
+      memory: 30000Mi
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  extraEnv: []
+  extraEnvFrom: []
+  extraVolumeMounts: []
+  extraVolumes: []
+  extraContainers: []
+
+db:
+  enabled: false
+  replicaCount: 1
+  service:
+    type: ClusterIP
+    port: 5432
+  storage:
+    size: 64Gi
+    storageClassName: ""
+  resources: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+redis:
+  enabled: true
+  replicaCount: 1
+  strategy:
+    # Match services rollout defaults for small fixed pools.
+    # Prevents deadlock when anti-affinity leaves no room for surge pods.
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 0
+      maxUnavailable: 1
+  service:
+    type: ClusterIP
+    port: 6379
+  external:
+    host: ""
+    port: 6379
+  extraEnv: []
+  resources: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+nats:
+  enabled: true
+  replicaCount: 1
+  strategy:
+    # Match services rollout defaults for small fixed pools.
+    # Prevents deadlock when anti-affinity leaves no room for surge pods.
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 0
+      maxUnavailable: 1
+  service:
+    type: ClusterIP
+    port: 4222
+    loadBalancerSourceRanges: []
+  # Compatibility shim for legacy services images that hardcode
+  # nats://nats:4222 instead of reading configured server URLs.
+  aliasService:
+    enabled: true
+    name: nats
+    # Used only when nats.enabled=false. If empty, host is derived from
+    # nats.server.url and normalized to an FQDN, then falls back to
+    # "okareo-nats.<namespace>.svc.cluster.local".
+    externalName: ""
+  external:
+    enabled: true
+    url: "nats://<NATS_EXTERNAL_IP_OR_DNS>:4222"
+  server:
+    # Internal backend-to-NATS URL used by services pods.
+    # Leave blank to use chart-derived service DNS: nats://<release-fullname>-nats:<port>
+    # Set explicitly only if you need a non-default internal route.
+    url: ""
+  resources: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+secrets:
+  create: true
+  existingSecretName: ""
+  dbUser: postgres
+  dbPassword: ""
+  dbName: okareo_db
+  databaseUrl: ""
+  tenantDb: ""
+  evalApiKey: ""
+  vllmApiKey: sk-none
+  fronteggApiKey: ""
+  fronteggDomain: ""
+  fronteggApiGatewayUrl: ""
+  fronteggWebhookKey: ""
+  fronteggPublicKey: ""
+  fronteggClientId: ""
+  ssoClientSecret: ""
+
+config:
+  frontendTenantsJson: '[{"id":"<TENANT_ID>","name":"<DISPLAY_NAME>","token":"<JWT>"}]'
+  servicesTenantsJson: '[{"id":"<TENANT_ID>","name":"<DISPLAY_NAME>"}]'
+  evalModelName: azure/<your-evaluator-deployment-name>
+  embeddingModelName: azure/<your-embedding-deployment-name>
+  airgapOnly: "TRUE"
+  taskListenerEnabled: "true"
+  traceThreadPoolSize: "4"
+  disableTelemetry: true
+  okareoApiGateway: ""
+  okareoAppDomain: ""
+
+modelConfig:
+  enabled: true
+  mountPath: /app/model
+  configPath: /app/model/model.json
+  modelJson: |
+    {
+      "evaluation_models": [
+        {
+          "provider": "azure",
+          "model_name": "azure/<your-evaluator-deployment-name>",
+          "api_key": "EVAL_API_KEY",
+          "api_base": "https://<AZURE_RESOURCE_NAME>.openai.azure.com/",
+          "api_version": "2024-02-01"
+        }
+      ],
+      "embedding_models": [
+        {
+          "provider": "azure",
+          "model_name": "azure/<your-embedding-deployment-name>",
+          "api_key": "EVAL_API_KEY",
+          "api_base": "https://<AZURE_RESOURCE_NAME>.openai.azure.com/",
+          "api_version": "2024-02-01"
+        }
+      ]
+    }

@@ -1,0 +1,94 @@
+{{- if .Values.db.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "okareo-standalone.fullname" . }}-db
+  labels:
+    {{- include "okareo-standalone.labels" . | nindent 4 }}
+    app.kubernetes.io/component: db
+spec:
+  type: {{ .Values.db.service.type }}
+  selector:
+    {{- include "okareo-standalone.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: db
+  ports:
+    - name: postgres
+      port: {{ .Values.db.service.port }}
+      targetPort: {{ .Values.db.service.port }}
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "okareo-standalone.fullname" . }}-db
+  labels:
+    {{- include "okareo-standalone.labels" . | nindent 4 }}
+    app.kubernetes.io/component: db
+spec:
+  serviceName: {{ include "okareo-standalone.fullname" . }}-db
+  replicas: {{ .Values.db.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "okareo-standalone.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: db
+  template:
+    metadata:
+      labels:
+        {{- include "okareo-standalone.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: db
+    spec:
+      {{- with .Values.db.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.db.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.db.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: postgres
+          image: "{{ .Values.images.db.repository }}:{{ .Values.images.db.tag }}"
+          imagePullPolicy: {{ .Values.images.db.pullPolicy }}
+          args: ["-c", "max_connections=600"]
+          ports:
+            - containerPort: {{ .Values.db.service.port }}
+          env:
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "okareo-standalone.secretName" . }}
+                  key: DB_USER
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "okareo-standalone.secretName" . }}
+                  key: DB_PASSWORD
+            - name: POSTGRES_DB
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "okareo-standalone.secretName" . }}
+                  key: DB_NAME
+          volumeMounts:
+            - name: db-data
+              mountPath: /var/lib/postgresql/data
+          resources:
+            {{- toYaml .Values.db.resources | nindent 12 }}
+  volumeClaimTemplates:
+    - metadata:
+        name: db-data
+        labels:
+          {{- include "okareo-standalone.labels" . | nindent 10 }}
+          app.kubernetes.io/component: db
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        {{- if .Values.db.storage.storageClassName }}
+        storageClassName: {{ .Values.db.storage.storageClassName | quote }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.db.storage.size }}
+{{- end }}

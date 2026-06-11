@@ -1,0 +1,89 @@
+nameOverride: ""
+fullnameOverride: ""
+
+imagePullSecrets: []
+
+image:
+  repository: redis
+  tag: 7.2-bookworm
+  pullPolicy: IfNotPresent
+
+server:
+  redisBinary: redis-server
+  sentinelBinary: redis-server
+  redisCliBinary: redis-cli
+  sentinelBinaryName: redis-server
+
+replicaCount: 3
+
+service:
+  readWrite:
+    name: ""
+    type: ClusterIP
+    port: 6379
+  sentinel:
+    name: ""
+    type: ClusterIP
+    port: 26379
+  headless:
+    name: ""
+    port: 6379
+
+auth:
+  enabled: false
+  existingSecret: ""
+  passwordKey: redis-password
+
+persistence:
+  enabled: true
+  accessModes:
+    - ReadWriteOnce
+  size: 8Gi
+  storageClassName: ""
+
+resources:
+  redis:
+    requests:
+      cpu: 200m
+      memory: 256Mi
+    limits:
+      cpu: 800m
+      memory: 1024Mi
+  sentinel:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 300m
+      memory: 256Mi
+
+sentinel:
+  masterName: mymaster
+  quorum: 2
+  downAfterMs: 10000
+  failoverTimeoutMs: 180000
+  parallelSyncs: 1
+
+bootstrap:
+  initialPrimaryOrdinal: 0
+
+failover:
+  labelPatchRetries: 10
+  labelPatchBackoffMs: 1000
+  fencing:
+    enabled: false
+
+serviceAccount:
+  create: true
+  name: ""
+
+rbac:
+  create: true
+
+podSecurityContext: {}
+securityContext: {}
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+topologySpreadConstraints: []

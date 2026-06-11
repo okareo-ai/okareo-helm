@@ -1,0 +1,293 @@
+{{- $runtimeSecretsSource := default "secretKeyRef" .Values.services.runtimeSecrets.source -}}
+{{- if and (ne $runtimeSecretsSource "secretKeyRef") (ne $runtimeSecretsSource "envFile") -}}
+{{- fail (printf "services.runtimeSecrets.source must be either \"secretKeyRef\" or \"envFile\", got %q" $runtimeSecretsSource) -}}
+{{- end -}}
+{{- if and (eq $runtimeSecretsSource "envFile") (not .Values.services.startupScript) -}}
+{{- fail "services.startupScript must be set when services.runtimeSecrets.source=envFile" -}}
+{{- end -}}
+{{- if and (eq $runtimeSecretsSource "envFile") (not .Values.services.runtimeSecrets.envFilePath) -}}
+{{- fail "services.runtimeSecrets.envFilePath must be set when services.runtimeSecrets.source=envFile" -}}
+{{- end -}}
+{{- if and .Values.services.enabled (not .Values.redis.enabled) (not .Values.redis.external.host) -}}
+{{- fail "services.enabled=true with redis.enabled=false requires redis.external.host to be set" -}}
+{{- end -}}
+{{- if and .Values.services.enabled (not .Values.nats.enabled) (not .Values.nats.server.url) -}}
+{{- fail "services.enabled=true with nats.enabled=false requires nats.server.url to be set" -}}
+{{- end -}}
+{{- $waitForFileSeconds := int (default 300 .Values.services.runtimeSecrets.waitForFileSeconds) -}}
+{{- $servicesSsoEnabled := false -}}
+{{- range .Values.services.extraEnv -}}
+{{- if and (kindIs "map" .) (eq (default "" .name) "OKAREO_STANDALONE_AUTH_MODE") (eq (lower (toString (default "" .value))) "sso") -}}
+{{- $servicesSsoEnabled = true -}}
+{{- end -}}
+{{- end -}}
+{{- if and .Values.services.enabled $servicesSsoEnabled (eq $runtimeSecretsSource "secretKeyRef") .Values.secrets.create (not .Values.secrets.ssoClientSecret) -}}
+{{- fail "secrets.ssoClientSecret must be set when services SSO mode is enabled and secrets.create=true" -}}
+{{- end -}}
+{{- if .Values.services.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "okareo-standalone.fullname" . }}-services
+  labels:
+    {{- include "okareo-standalone.labels" . | nindent 4 }}
+    app.kubernetes.io/component: services
+spec:
+  type: {{ .Values.services.service.type }}
+  selector:
+    {{- include "okareo-standalone.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: services
+  ports:
+    - name: http
+      port: {{ .Values.services.service.port }}
+      targetPort: {{ .Values.services.service.port }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "okareo-standalone.fullname" . }}-services
+  labels:
+    {{- include "okareo-standalone.labels" . | nindent 4 }}
+    app.kubernetes.io/component: services
+spec:
+  replicas: {{ .Values.services.replicaCount }}
+  {{- with .Values.services.strategy }}
+  strategy:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "okareo-standalone.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: services
+  template:
+    metadata:
+      labels:
+        {{- include "okareo-standalone.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: services
+      {{- with .Values.services.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      {{- if .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml .Values.imagePullSecrets | nindent 8 }}
+      {{- end }}
+      {{- with .Values.services.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.services.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.services.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: services
+          image: "{{ .Values.images.services.repository }}:{{ .Values.images.services.tag }}"
+          imagePullPolicy: {{ .Values.images.services.pullPolicy }}
+          {{- if eq $runtimeSecretsSource "envFile" }}
+          command:
+            - bash
+            - -c
+          args:
+            - |
+              set -euo pipefail
+              ENV_FILE={{ .Values.services.runtimeSecrets.envFilePath | quote }}
+              WAIT_SECONDS={{ $waitForFileSeconds }}
+
+              if [ "$WAIT_SECONDS" -gt 0 ]; then
+                elapsed=0
+                while [ ! -f "$ENV_FILE" ]; do
+                  if [ "$elapsed" -ge "$WAIT_SECONDS" ]; then
+                    echo "Timed out waiting ${WAIT_SECONDS}s for runtime env file at $ENV_FILE"
+                    exit 1
+                  fi
+                  sleep 1
+                  elapsed=$((elapsed + 1))
+                done
+              fi
+
+              if [ ! -f "$ENV_FILE" ]; then
+                echo "Runtime env file not found at $ENV_FILE"
+                exit 1
+              fi
+
+              set -a
+              . "$ENV_FILE"
+              set +a
+{{ .Values.services.startupScript | nindent 14 }}
+          {{- else }}
+          command:
+            {{- toYaml .Values.services.command | nindent 12 }}
+          args:
+            {{- toYaml .Values.services.args | nindent 12 }}
+          {{- end }}
+          ports:
+            - containerPort: {{ .Values.services.service.port }}
+          env:
+            {{- if eq $runtimeSecretsSource "secretKeyRef" }}
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "okareo-standalone.secretName" . }}
+                  key: DATABASE_URL
+            - name: TENANT_DB
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "okareo-standalone.secretName" . }}
+                  key: TENANT_DB
+            - name: DB_USER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "okareo-standalone.secretName" . }}
+                  key: DB_USER
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "okareo-standalone.secretName" . }}
+                  key: DB_PASSWORD
+            - name: DB_NAME
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "okareo-standalone.secretName" . }}
+                  key: DB_NAME
+            - name: EVAL_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "okareo-standalone.secretName" . }}
+                  key: EVAL_API_KEY
+            - name: VLLM_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "okareo-standalone.secretName" . }}
+                  key: VLLM_API_KEY
+            - name: FRONTEGG_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "okareo-standalone.secretName" . }}
+                  key: FRONTEGG_API_KEY
+            - name: FRONTEGG_DOMAIN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "okareo-standalone.secretName" . }}
+                  key: FRONTEGG_DOMAIN
+            - name: FRONTEGG_API_GATEWAY_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "okareo-standalone.secretName" . }}
+                  key: FRONTEGG_API_GATEWAY_URL
+            - name: FRONTEGG_WEBHOOK_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "okareo-standalone.secretName" . }}
+                  key: FRONTEGG_WEBHOOK_KEY
+            - name: FRONTEGG_PUBLIC_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "okareo-standalone.secretName" . }}
+                  key: FRONTEGG_PUBLIC_KEY
+            - name: FRONTEGG_CLIENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "okareo-standalone.secretName" . }}
+                  key: FRONTEGG_CLIENT_ID
+            {{- if $servicesSsoEnabled }}
+            - name: SSO_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "okareo-standalone.secretName" . }}
+                  key: SSO_CLIENT_SECRET
+            {{- end }}
+            {{- end }}
+            - name: OKAREO_AIRGAP_TENANTS
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "okareo-standalone.fullname" . }}-config
+                  key: SERVICES_TENANTS_JSON
+            - name: REDISHOST
+              value: {{ include "okareo-standalone.redisHost" . | quote }}
+            - name: REDISPORT
+              value: {{ include "okareo-standalone.redisPort" . | quote }}
+            - name: AIRGAP_NATS_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "okareo-standalone.fullname" . }}-config
+                  key: AIRGAP_NATS_URL
+            - name: AIRGAP_ONLY
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "okareo-standalone.fullname" . }}-config
+                  key: AIRGAP_ONLY
+            - name: DISABLE_TELEMETRY
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "okareo-standalone.fullname" . }}-config
+                  key: DISABLE_TELEMETRY
+            - name: EVAL_MODEL_NAME
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "okareo-standalone.fullname" . }}-config
+                  key: EVAL_MODEL_NAME
+            - name: EMBEDDING_MODEL_NAME
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "okareo-standalone.fullname" . }}-config
+                  key: EMBEDDING_MODEL_NAME
+            - name: TASK_LISTENER_ENABLED
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "okareo-standalone.fullname" . }}-config
+                  key: TASK_LISTENER_ENABLED
+            - name: TRACE_THREAD_POOL_SIZE
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "okareo-standalone.fullname" . }}-config
+                  key: TRACE_THREAD_POOL_SIZE
+            - name: MODEL_CONFIG_PATH
+              value: {{ .Values.modelConfig.configPath | quote }}
+            - name: OKAREO_APP_DOMAIN
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "okareo-standalone.fullname" . }}-config
+                  key: OKAREO_APP_DOMAIN
+            - name: AIRGAP_WEBHOOK_NOTIFICATIONS_ENABLED
+              value: {{ ternary "true" "false" .Values.services.airgapWebhookNotificationsEnabled | quote }}
+            {{- with .Values.services.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- with .Values.services.extraEnvFrom }}
+          envFrom:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- if or .Values.modelConfig.enabled .Values.services.extraVolumeMounts }}
+          volumeMounts:
+            {{- if .Values.modelConfig.enabled }}
+            - name: model-config
+              mountPath: {{ .Values.modelConfig.mountPath | quote }}
+              readOnly: true
+            {{- end }}
+            {{- with .Values.services.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- end }}
+          resources:
+            {{- toYaml .Values.services.resources | nindent 12 }}
+        {{- with .Values.services.extraContainers }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- if or .Values.modelConfig.enabled .Values.services.extraVolumes }}
+      volumes:
+        {{- if .Values.modelConfig.enabled }}
+        - name: model-config
+          configMap:
+            name: {{ include "okareo-standalone.fullname" . }}-model-config
+        {{- end }}
+        {{- with .Values.services.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- end }}
+{{- end }}

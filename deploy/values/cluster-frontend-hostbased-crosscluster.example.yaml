@@ -1,0 +1,95 @@
+# Frontend cluster overlay for host-based cross-cluster routing.
+# - app host routes to in-cluster frontend service
+# - api host routes to backend cluster services LB via local upstream service/endpoints
+# - nats external route is provided via ingress-nginx TCP mapping config map
+
+frontend:
+  enabled: true
+  replicaCount: 3
+  nodeSelector:
+    agentpool: frontendpool
+  tolerations:
+    - key: dedicated
+      operator: Equal
+      value: frontend
+      effect: NoSchedule
+  affinity:
+    podAntiAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        - topologyKey: kubernetes.io/hostname
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/component: frontend
+  resources:
+    requests:
+      cpu: 500m
+      memory: 1024Mi
+    limits:
+      cpu: 1000m
+      memory: 2048Mi
+
+services:
+  enabled: false
+
+redis:
+  enabled: false
+
+nats:
+  enabled: false
+
+db:
+  enabled: false
+
+crossClusterApi:
+  enabled: true
+  serviceName: okareo-api-external
+  servicePort: 8000
+  endpointIP: <BACKEND_SERVICES_LB_IP>
+
+crossClusterNats:
+  enabled: true
+  serviceName: okareo-nats-external
+  servicePort: 4222
+  endpointIP: <BACKEND_NATS_LB_IP>
+
+ingressNginxTcp:
+  enabled: true
+  namespace: ingress-nginx
+  configMapName: tcp-services
+
+ingress:
+  frontend:
+    enabled: true
+    className: nginx
+    annotations:
+      cert-manager.io/cluster-issuer: letsencrypt-prod
+      nginx.ingress.kubernetes.io/ssl-redirect: "true"
+      nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+    hosts:
+      - host: app.example.com
+        paths:
+          - path: /
+            pathType: Prefix
+    tls:
+      - hosts:
+          - app.example.com
+        secretName: okareo-le-tls-frontend
+  services:
+    enabled: true
+    className: nginx
+    annotations:
+      cert-manager.io/cluster-issuer: letsencrypt-prod
+      nginx.ingress.kubernetes.io/ssl-redirect: "true"
+      nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+      nginx.ingress.kubernetes.io/proxy-connect-timeout: "30"
+      nginx.ingress.kubernetes.io/proxy-send-timeout: "300"
+      nginx.ingress.kubernetes.io/proxy-read-timeout: "7200"
+    hosts:
+      - host: api.example.com
+        paths:
+          - path: /
+            pathType: Prefix
+    tls:
+      - hosts:
+          - api.example.com
+        secretName: okareo-le-tls-api

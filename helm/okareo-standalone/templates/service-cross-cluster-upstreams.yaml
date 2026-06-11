@@ -1,0 +1,92 @@
+{{- if and .Values.crossClusterApi.enabled (not .Values.crossClusterApi.endpointIP) -}}
+{{- fail "crossClusterApi.enabled=true requires crossClusterApi.endpointIP to be set" -}}
+{{- end -}}
+{{- if and .Values.crossClusterNats.enabled (not .Values.crossClusterNats.endpointIP) -}}
+{{- fail "crossClusterNats.enabled=true requires crossClusterNats.endpointIP to be set" -}}
+{{- end -}}
+{{- if and .Values.ingressNginxTcp.enabled (not .Values.crossClusterNats.enabled) -}}
+{{- fail "ingressNginxTcp.enabled=true requires crossClusterNats.enabled=true" -}}
+{{- end -}}
+
+{{- if .Values.crossClusterApi.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Values.crossClusterApi.serviceName }}
+  labels:
+    {{- include "okareo-standalone.labels" . | nindent 4 }}
+    app.kubernetes.io/component: services
+    okareo.io/cross-cluster-upstream: "true"
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      protocol: TCP
+      port: {{ .Values.crossClusterApi.servicePort }}
+      targetPort: {{ .Values.crossClusterApi.servicePort }}
+---
+apiVersion: v1
+kind: Endpoints
+metadata:
+  name: {{ .Values.crossClusterApi.serviceName }}
+  labels:
+    {{- include "okareo-standalone.labels" . | nindent 4 }}
+    app.kubernetes.io/component: services
+    okareo.io/cross-cluster-upstream: "true"
+subsets:
+  - addresses:
+      - ip: {{ .Values.crossClusterApi.endpointIP | quote }}
+    ports:
+      - name: http
+        port: {{ .Values.crossClusterApi.servicePort }}
+        protocol: TCP
+{{- end }}
+
+{{- if .Values.crossClusterNats.enabled }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Values.crossClusterNats.serviceName }}
+  labels:
+    {{- include "okareo-standalone.labels" . | nindent 4 }}
+    app.kubernetes.io/component: nats
+    okareo.io/cross-cluster-upstream: "true"
+spec:
+  type: ClusterIP
+  ports:
+    - name: nats
+      protocol: TCP
+      port: {{ .Values.crossClusterNats.servicePort }}
+      targetPort: {{ .Values.crossClusterNats.servicePort }}
+---
+apiVersion: v1
+kind: Endpoints
+metadata:
+  name: {{ .Values.crossClusterNats.serviceName }}
+  labels:
+    {{- include "okareo-standalone.labels" . | nindent 4 }}
+    app.kubernetes.io/component: nats
+    okareo.io/cross-cluster-upstream: "true"
+subsets:
+  - addresses:
+      - ip: {{ .Values.crossClusterNats.endpointIP | quote }}
+    ports:
+      - name: nats
+        port: {{ .Values.crossClusterNats.servicePort }}
+        protocol: TCP
+{{- end }}
+
+{{- if and .Values.ingressNginxTcp.enabled .Values.crossClusterNats.enabled }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Values.ingressNginxTcp.configMapName }}
+  namespace: {{ .Values.ingressNginxTcp.namespace }}
+  labels:
+    {{- include "okareo-standalone.labels" . | nindent 4 }}
+    okareo.io/cross-cluster-upstream: "true"
+data:
+  {{ .Values.crossClusterNats.servicePort | quote }}: {{ printf "%s/%s:%v" .Release.Namespace .Values.crossClusterNats.serviceName .Values.crossClusterNats.servicePort | quote }}
+{{- end }}

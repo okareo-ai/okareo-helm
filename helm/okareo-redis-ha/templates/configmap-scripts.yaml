@@ -1,0 +1,180 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "okareo-redis-ha.fullname" . }}-scripts
+  labels:
+    {{- include "okareo-redis-ha.labels" . | nindent 4 }}
+data:
+  start-redis.sh: |
+    #!/bin/sh
+    set -eu
+
+    REDIS_PORT="{{ .Values.service.readWrite.port }}"
+    INITIAL_PRIMARY_ORDINAL="{{ .Values.bootstrap.initialPrimaryOrdinal }}"
+    REDIS_BIN="{{ .Values.server.redisBinary }}"
+    REDIS_CLI="{{ .Values.server.redisCliBinary }}"
+
+    pod_name="${POD_NAME:-$(hostname)}"
+    ordinal="${pod_name##*-}"
+    headless="{{ include "okareo-redis-ha.headlessServiceName" . }}"
+    namespace="${POD_NAMESPACE}"
+    master_name="{{ .Values.sentinel.masterName }}"
+    initial_primary_host="{{ include "okareo-redis-ha.fullname" . }}-${INITIAL_PRIMARY_ORDINAL}.${headless}.${namespace}.svc.cluster.local"
+    bootstrap_marker="/data/.okareo_bootstrap_done"
+
+    mkdir -p /data
+
+    cat >/tmp/redis.conf <<EOF
+    port ${REDIS_PORT}
+    bind 0.0.0.0
+    protected-mode no
+    dir /data
+    appendonly yes
+    replica-announce-ip ${pod_name}.${headless}.${namespace}.svc.cluster.local
+    replica-announce-port ${REDIS_PORT}
+    EOF
+
+    # For first boot, non-primary ordinals follow the deterministic initial primary.
+    if [ ! -f "${bootstrap_marker}" ] && [ "${ordinal}" != "${INITIAL_PRIMARY_ORDINAL}" ]; then
+      echo "replicaof ${initial_primary_host} ${REDIS_PORT}" >> /tmp/redis.conf
+    fi
+
+    if [ ! -f "${bootstrap_marker}" ]; then
+      touch "${bootstrap_marker}"
+    fi
+
+    # On restarts, reconcile against sentinel-discovered master if available.
+    if master_reply="$(${REDIS_CLI} -h 127.0.0.1 -p {{ .Values.service.sentinel.port }} sentinel get-master-addr-by-name "${master_name}" 2>/dev/null)"; then
+      master_host="$(printf '%s\n' "${master_reply}" | sed -n '1p')"
+      master_port="$(printf '%s\n' "${master_reply}" | sed -n '2p')"
+      if [ -n "${master_host}" ] && [ -n "${master_port}" ] && [ "${master_host}" != "${pod_name}.${headless}.${namespace}.svc.cluster.local" ]; then
+        echo "replicaof ${master_host} ${master_port}" >> /tmp/redis.conf
+      fi
+    fi
+
+    exec "${REDIS_BIN}" /tmp/redis.conf
+
+  start-sentinel.sh: |
+    #!/bin/sh
+    set -eu
+
+    # Ensure curl is available for service selector patching on failover events.
+    if ! command -v curl >/dev/null 2>&1; then
+      apt-get update >/dev/null
+      apt-get install -y --no-install-recommends curl ca-certificates >/dev/null
+      rm -rf /var/lib/apt/lists/*
+    fi
+
+    SENTINEL_PORT="{{ .Values.service.sentinel.port }}"
+    REDIS_PORT="{{ .Values.service.readWrite.port }}"
+    QUORUM="{{ .Values.sentinel.quorum }}"
+    MASTER_NAME="{{ .Values.sentinel.masterName }}"
+    INITIAL_PRIMARY_ORDINAL="{{ .Values.bootstrap.initialPrimaryOrdinal }}"
+    SENTINEL_BIN="{{ .Values.server.sentinelBinary }}"
+    SENTINEL_BIN_NAME="{{ .Values.server.sentinelBinaryName }}"
+
+    pod_name="${POD_NAME:-$(hostname)}"
+    namespace="${POD_NAMESPACE}"
+    headless="{{ include "okareo-redis-ha.headlessServiceName" . }}"
+    initial_primary_host="{{ include "okareo-redis-ha.fullname" . }}-${INITIAL_PRIMARY_ORDINAL}.${headless}.${namespace}.svc.cluster.local"
+
+    cat >/tmp/sentinel.conf <<EOF
+    port ${SENTINEL_PORT}
+    sentinel monitor ${MASTER_NAME} ${initial_primary_host} ${REDIS_PORT} ${QUORUM}
+    sentinel down-after-milliseconds ${MASTER_NAME} {{ .Values.sentinel.downAfterMs }}
+    sentinel failover-timeout ${MASTER_NAME} {{ .Values.sentinel.failoverTimeoutMs }}
+    sentinel parallel-syncs ${MASTER_NAME} {{ .Values.sentinel.parallelSyncs }}
+    sentinel resolve-hostnames yes
+    sentinel announce-hostnames yes
+    sentinel announce-ip ${pod_name}.${headless}.${namespace}.svc.cluster.local
+    sentinel announce-port ${SENTINEL_PORT}
+    sentinel client-reconfig-script ${MASTER_NAME} /scripts/on-role-change.sh
+    daemonize no
+    logfile ""
+    EOF
+
+    # Redis image exposes redis-server; run sentinel mode via binary flag.
+    if [ "${SENTINEL_BIN_NAME}" = "redis-sentinel" ]; then
+      exec "${SENTINEL_BIN}" /tmp/sentinel.conf
+    fi
+    exec "${SENTINEL_BIN}" /tmp/sentinel.conf --sentinel
+
+  on-role-change.sh: |
+    #!/bin/bash
+    set -euo pipefail
+
+    MASTER_NAME="{{ .Values.sentinel.masterName }}"
+    REDIS_CLI="{{ .Values.server.redisCliBinary }}"
+    SENTINEL_PORT="{{ .Values.service.sentinel.port }}"
+    PATCH_RETRIES="{{ .Values.failover.labelPatchRetries }}"
+    PATCH_BACKOFF_MS="{{ .Values.failover.labelPatchBackoffMs }}"
+    namespace="${POD_NAMESPACE}"
+    headless="{{ include "okareo-redis-ha.headlessServiceName" . }}"
+    rw_service="{{ include "okareo-redis-ha.rwServiceName" . }}"
+
+    token_file="/var/run/secrets/kubernetes.io/serviceaccount/token"
+    ca_file="/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
+    api="https://${KUBERNETES_SERVICE_HOST}:${KUBERNETES_SERVICE_PORT_HTTPS}"
+
+    master_reply="$(${REDIS_CLI} -h 127.0.0.1 -p ${SENTINEL_PORT} sentinel get-master-addr-by-name "${MASTER_NAME}" 2>/dev/null || true)"
+    master_host="$(printf '%s\n' "${master_reply}" | sed -n '1p')"
+
+    if [ -z "${master_host}" ]; then
+      echo "unable to resolve master host from sentinel" >&2
+      exit 0
+    fi
+
+    if echo "${master_host}" | grep -q '[A-Za-z]'; then
+      master_ip="$(getent hosts "${master_host}" | awk '{print $1}' | head -n1 || true)"
+    else
+      master_ip="${master_host}"
+    fi
+
+    if [ -z "${master_ip}" ]; then
+      echo "unable to resolve master IP for host ${master_host}" >&2
+      exit 0
+    fi
+
+    target_pod=""
+{{- range $i, $_ := until (int .Values.replicaCount) }}
+    if [ -z "${target_pod}" ]; then
+      candidate_pod="{{ include "okareo-redis-ha.fullname" $ }}-{{ $i }}"
+      candidate_fqdn="${candidate_pod}.${headless}.${namespace}.svc.cluster.local"
+      candidate_ip="$(getent hosts "${candidate_fqdn}" | awk '{print $1}' | head -n1 || true)"
+      if [ -n "${candidate_ip}" ] && [ "${candidate_ip}" = "${master_ip}" ]; then
+        target_pod="${candidate_pod}"
+      fi
+    fi
+{{- end }}
+
+    if [ -z "${target_pod}" ]; then
+      echo "could not map master IP ${master_ip} to any statefulset pod" >&2
+      exit 0
+    fi
+
+    token="$(cat "${token_file}")"
+    patch_payload="{\"spec\":{\"selector\":{\"statefulset.kubernetes.io/pod-name\":\"${target_pod}\"}}}"
+
+    i=1
+    while [ "$i" -le "$PATCH_RETRIES" ]; do
+      if curl -sS --fail \
+        --cacert "${ca_file}" \
+        --header "Authorization: Bearer ${token}" \
+        --header "Content-Type: application/merge-patch+json" \
+        --request PATCH \
+        --data "${patch_payload}" \
+        "${api}/api/v1/namespaces/${namespace}/services/${rw_service}" >/dev/null; then
+        exit 0
+      fi
+      sleep "$(awk "BEGIN {printf \"%.3f\", ${PATCH_BACKOFF_MS}/1000}")"
+      i=$((i+1))
+    done
+
+    echo "warning: failed to patch RW service selector to ${target_pod}" >&2
+    exit 0
+
+  prestop.sh: |
+    #!/bin/sh
+    set -eu
+
+    sleep 1

@@ -1,0 +1,6 @@
+apiVersion: v2
+name: okareo-redis-ha
+description: Internal Redis HA chart with Sentinel-based failover
+type: application
+version: 0.1.0
+appVersion: "7.2"

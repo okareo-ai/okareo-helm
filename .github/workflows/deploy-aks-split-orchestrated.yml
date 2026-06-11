@@ -1,0 +1,414 @@
+name: Deploy Okareo Split (Orchestrated)
+
+on:
+  workflow_dispatch:
+    inputs:
+      backend_aks_resource_group:
+        description: Azure resource group for semitrusted/backend AKS cluster
+        required: true
+        type: string
+      backend_aks_cluster_name:
+        description: AKS cluster name for semitrusted/backend cluster
+        required: true
+        type: string
+      frontend_aks_resource_group:
+        description: Azure resource group for untrusted/frontend AKS cluster
+        required: true
+        type: string
+      frontend_aks_cluster_name:
+        description: AKS cluster name for untrusted/frontend cluster
+        required: true
+        type: string
+      kubernetes_namespace:
+        description: Kubernetes namespace for both clusters
+        required: true
+        default: okareo
+        type: string
+      backend_release_name:
+        description: Helm release name for semitrusted services deployment
+        required: true
+        default: okareo-services
+        type: string
+      frontend_release_name:
+        description: Helm release name for untrusted frontend deployment
+        required: true
+        default: okareo-frontend
+        type: string
+      chart_path:
+        description: Path to Okareo standalone chart in this repo
+        required: true
+        default: helm/okareo-standalone
+        type: string
+      backend_values_overlay_path:
+        description: Backend overlay values file path
+        required: true
+        default: deploy/values/cluster-backend-services.example.yaml
+        type: string
+      frontend_values_overlay_template_path:
+        description: Frontend cross-cluster overlay template path
+        required: true
+        default: deploy/values/cluster-frontend-hostbased-crosscluster.example.yaml
+        type: string
+      redis_release_name:
+        description: Helm release name for external Redis HA chart
+        required: true
+        default: okareo-redis-ha
+        type: string
+      redis_chart_path:
+        description: Chart path for external Redis HA chart
+        required: true
+        default: helm/okareo-redis-ha
+        type: string
+      redis_values_path:
+        description: Values file path for external Redis HA chart
+        required: true
+        default: deploy/values/redis-ha-4node.servicepool.example.yaml
+        type: string
+      nats_release_name:
+        description: Helm release name for external NATS chart
+        required: true
+        default: okareo-nats
+        type: string
+      nats_values_path:
+        description: Values file path for external NATS chart
+        required: true
+        default: deploy/values/nats-4node.servicepool.example.yaml
+        type: string
+      create_namespace:
+        description: Create namespace in both clusters if missing
+        required: true
+        default: true
+        type: boolean
+      backend_helm_timeout:
+        description: Helm timeout for semitrusted backend operations
+        required: true
+        default: 30m
+        type: string
+      frontend_helm_timeout:
+        description: Helm timeout for untrusted frontend operations
+        required: true
+        default: 20m
+        type: string
+      frontend_app_host:
+        description: Optional app host override for frontend ingress
+        required: false
+        default: ""
+        type: string
+      frontend_api_host:
+        description: Optional api host override for services ingress
+        required: false
+        default: ""
+        type: string
+      frontend_tls_secret_app:
+        description: Optional TLS secret override for frontend ingress
+        required: false
+        default: ""
+        type: string
+      frontend_tls_secret_api:
+        description: Optional TLS secret override for services ingress
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      NAMESPACE: ${{ inputs.kubernetes_namespace }}
+      BACKEND_RELEASE: ${{ inputs.backend_release_name }}
+      FRONTEND_RELEASE: ${{ inputs.frontend_release_name }}
+      CHART_PATH: ${{ inputs.chart_path }}
+      BACKEND_OVERLAY: ${{ inputs.backend_values_overlay_path }}
+      FRONTEND_OVERLAY_TEMPLATE: ${{ inputs.frontend_values_overlay_template_path }}
+      FRONTEND_OVERLAY_RENDERED: /tmp/cluster-frontend-hostbased-crosscluster.rendered.yaml
+      REDIS_RELEASE: ${{ inputs.redis_release_name }}
+      REDIS_CHART_PATH: ${{ inputs.redis_chart_path }}
+      REDIS_VALUES_PATH: ${{ inputs.redis_values_path }}
+      NATS_RELEASE: ${{ inputs.nats_release_name }}
+      NATS_VALUES_PATH: ${{ inputs.nats_values_path }}
+      CREATE_NAMESPACE: ${{ inputs.create_namespace }}
+      BACKEND_HELM_TIMEOUT: ${{ inputs.backend_helm_timeout }}
+      FRONTEND_HELM_TIMEOUT: ${{ inputs.frontend_helm_timeout }}
+      FRONTEND_APP_HOST: ${{ inputs.frontend_app_host }}
+      FRONTEND_API_HOST: ${{ inputs.frontend_api_host }}
+      FRONTEND_TLS_SECRET_APP: ${{ inputs.frontend_tls_secret_app }}
+      FRONTEND_TLS_SECRET_API: ${{ inputs.frontend_tls_secret_api }}
+      VALUES_FILE: /tmp/okareo-values.yaml
+      OKAREO_VALUES_YAML: ${{ vars.OKAREO_VALUES_YAML }}
+      OKAREO_VALUES_YAML_B64: ${{ vars.OKAREO_VALUES_YAML_B64 }}
+      OKAREO_REGISTRY_SERVER: ${{ secrets.OKAREO_REGISTRY_SERVER }}
+      OKAREO_REGISTRY_USERNAME: ${{ secrets.OKAREO_REGISTRY_USERNAME }}
+      OKAREO_REGISTRY_PASSWORD: ${{ secrets.OKAREO_REGISTRY_PASSWORD }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Setup kubectl
+        uses: azure/setup-kubectl@v4
+
+      - name: Setup Helm
+        uses: azure/setup-helm@v4
+
+      - name: Install Python YAML dependency
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install pyyaml
+
+      - name: Materialize runtime values
+        run: |
+          set -euo pipefail
+          mkdir -p "$(dirname "$VALUES_FILE")"
+
+          if [ -n "${OKAREO_VALUES_YAML_B64:-}" ]; then
+            printf '%s' "$OKAREO_VALUES_YAML_B64" | base64 -d > "$VALUES_FILE"
+            echo "Created $VALUES_FILE from OKAREO_VALUES_YAML_B64"
+            exit 0
+          fi
+
+          if [ -n "${OKAREO_VALUES_YAML:-}" ]; then
+            printf '%s' "$OKAREO_VALUES_YAML" > "$VALUES_FILE"
+            echo "Created $VALUES_FILE from OKAREO_VALUES_YAML"
+            exit 0
+          fi
+
+          echo "Missing values variable. Set OKAREO_VALUES_YAML or OKAREO_VALUES_YAML_B64."
+          exit 1
+
+      - name: Verify required files
+        run: |
+          set -euo pipefail
+          test -f "$VALUES_FILE"
+          test -f "$CHART_PATH/Chart.yaml"
+          test -f "$BACKEND_OVERLAY"
+          test -f "$FRONTEND_OVERLAY_TEMPLATE"
+          test -f "$REDIS_CHART_PATH/Chart.yaml"
+          test -f "$REDIS_VALUES_PATH"
+          test -f "$NATS_VALUES_PATH"
+
+      - name: Set backend AKS context
+        uses: azure/aks-set-context@v4
+        with:
+          resource-group: ${{ inputs.backend_aks_resource_group }}
+          cluster-name: ${{ inputs.backend_aks_cluster_name }}
+
+      - name: Ensure backend namespace exists
+        run: |
+          set -euo pipefail
+          if [ "$CREATE_NAMESPACE" = "true" ]; then
+            kubectl create namespace "$NAMESPACE" --dry-run=client -o yaml | kubectl apply -f -
+          else
+            kubectl get namespace "$NAMESPACE" >/dev/null
+          fi
+
+      - name: Create backend image pull secret
+        run: |
+          set -euo pipefail
+          kubectl -n "$NAMESPACE" create secret docker-registry okareo-registry \
+            --docker-server="$OKAREO_REGISTRY_SERVER" \
+            --docker-username="$OKAREO_REGISTRY_USERNAME" \
+            --docker-password="$OKAREO_REGISTRY_PASSWORD" \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+      - name: Deploy backend dependencies
+        run: |
+          set -euo pipefail
+          helm repo add nats https://nats-io.github.io/k8s/helm/charts/
+          helm repo update
+
+          helm upgrade --install "$REDIS_RELEASE" "$REDIS_CHART_PATH" \
+            --namespace "$NAMESPACE" \
+            -f "$REDIS_VALUES_PATH" \
+            --wait --timeout "$BACKEND_HELM_TIMEOUT"
+
+          helm upgrade --install "$NATS_RELEASE" nats/nats \
+            --namespace "$NAMESPACE" \
+            -f "$NATS_VALUES_PATH" \
+            --wait --timeout "$BACKEND_HELM_TIMEOUT"
+
+      - name: Deploy semitrusted services release
+        run: |
+          set -euo pipefail
+          helm upgrade --install "$BACKEND_RELEASE" "$CHART_PATH" \
+            --namespace "$NAMESPACE" \
+            -f "$VALUES_FILE" \
+            -f "$BACKEND_OVERLAY" \
+            --wait --timeout "$BACKEND_HELM_TIMEOUT"
+
+      - name: Resolve backend LoadBalancer IPs
+        id: backend_ips
+        run: |
+          set -euo pipefail
+
+          SERVICES_SVC="$(kubectl -n "$NAMESPACE" get svc -l "app.kubernetes.io/instance=$BACKEND_RELEASE,app.kubernetes.io/component=services" -o jsonpath='{.items[0].metadata.name}')"
+          if [ -z "$SERVICES_SVC" ]; then
+            echo "Could not resolve services Service for backend release $BACKEND_RELEASE"
+            exit 1
+          fi
+
+          NATS_SVC="$(python - <<'PY'
+import json, os, subprocess
+ns = os.environ["NAMESPACE"]
+release = os.environ["NATS_RELEASE"]
+data = json.loads(subprocess.check_output(["kubectl", "-n", ns, "get", "svc", "-o", "json"], text=True))
+matches = []
+for item in data.get("items", []):
+    labels = item.get("metadata", {}).get("labels", {})
+    if labels.get("app.kubernetes.io/instance") != release:
+        continue
+    ports = item.get("spec", {}).get("ports", [])
+    if any(int(port.get("port", 0)) == 4222 for port in ports):
+        matches.append(item.get("metadata", {}).get("name", ""))
+matches = sorted([m for m in matches if m])
+print(matches[0] if matches else "")
+PY
+          )"
+          if [ -z "$NATS_SVC" ]; then
+            echo "Could not resolve NATS Service for release $NATS_RELEASE"
+            exit 1
+          fi
+
+          SERVICES_IP=""
+          NATS_IP=""
+          for _ in $(seq 1 60); do
+            SERVICES_IP="$(kubectl -n "$NAMESPACE" get svc "$SERVICES_SVC" -o jsonpath='{.status.loadBalancer.ingress[0].ip}' || true)"
+            NATS_IP="$(kubectl -n "$NAMESPACE" get svc "$NATS_SVC" -o jsonpath='{.status.loadBalancer.ingress[0].ip}' || true)"
+            if [ -n "$SERVICES_IP" ] && [ -n "$NATS_IP" ]; then
+              break
+            fi
+            sleep 10
+          done
+
+          if [ -z "$SERVICES_IP" ] || [ -z "$NATS_IP" ]; then
+            echo "Timed out waiting for backend LoadBalancer IPs"
+            echo "services svc: $SERVICES_SVC, ip: ${SERVICES_IP:-<empty>}"
+            echo "nats svc: $NATS_SVC, ip: ${NATS_IP:-<empty>}"
+            exit 1
+          fi
+
+          echo "services_ip=$SERVICES_IP" >> "$GITHUB_OUTPUT"
+          echo "nats_ip=$NATS_IP" >> "$GITHUB_OUTPUT"
+          echo "Resolved backend services LB IP: $SERVICES_IP"
+          echo "Resolved backend nats LB IP: $NATS_IP"
+
+      - name: Set frontend AKS context
+        uses: azure/aks-set-context@v4
+        with:
+          resource-group: ${{ inputs.frontend_aks_resource_group }}
+          cluster-name: ${{ inputs.frontend_aks_cluster_name }}
+
+      - name: Ensure frontend namespace exists
+        run: |
+          set -euo pipefail
+          if [ "$CREATE_NAMESPACE" = "true" ]; then
+            kubectl create namespace "$NAMESPACE" --dry-run=client -o yaml | kubectl apply -f -
+          else
+            kubectl get namespace "$NAMESPACE" >/dev/null
+          fi
+
+      - name: Create frontend image pull secret
+        run: |
+          set -euo pipefail
+          kubectl -n "$NAMESPACE" create secret docker-registry okareo-registry \
+            --docker-server="$OKAREO_REGISTRY_SERVER" \
+            --docker-username="$OKAREO_REGISTRY_USERNAME" \
+            --docker-password="$OKAREO_REGISTRY_PASSWORD" \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+      - name: Render frontend cross-cluster overlay
+        env:
+          BACKEND_SERVICES_IP: ${{ steps.backend_ips.outputs.services_ip }}
+          BACKEND_NATS_IP: ${{ steps.backend_ips.outputs.nats_ip }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+import os
+import yaml
+
+template_path = os.environ["FRONTEND_OVERLAY_TEMPLATE"]
+rendered_path = os.environ["FRONTEND_OVERLAY_RENDERED"]
+services_ip = os.environ["BACKEND_SERVICES_IP"]
+nats_ip = os.environ["BACKEND_NATS_IP"]
+
+with open(template_path, encoding="utf-8") as f:
+    values = yaml.safe_load(f) or {}
+
+values.setdefault("crossClusterApi", {})["endpointIP"] = services_ip
+values.setdefault("crossClusterNats", {})["endpointIP"] = nats_ip
+
+config = values.setdefault("config", {})
+
+app_host = os.environ.get("FRONTEND_APP_HOST", "").strip()
+api_host = os.environ.get("FRONTEND_API_HOST", "").strip()
+app_tls = os.environ.get("FRONTEND_TLS_SECRET_APP", "").strip()
+api_tls = os.environ.get("FRONTEND_TLS_SECRET_API", "").strip()
+
+if app_host:
+    config["okareoAppDomain"] = f"https://{app_host}"
+    ingress_frontend = ((values.setdefault("ingress", {})).setdefault("frontend", {}))
+    hosts = ingress_frontend.setdefault("hosts", [{}])
+    if not hosts:
+        hosts.append({})
+    hosts[0]["host"] = app_host
+    tls = ingress_frontend.setdefault("tls", [{}])
+    if not tls:
+        tls.append({})
+    tls[0]["hosts"] = [app_host]
+
+if api_host:
+    config["okareoApiGateway"] = f"https://{api_host}"
+    ingress_services = ((values.setdefault("ingress", {})).setdefault("services", {}))
+    hosts = ingress_services.setdefault("hosts", [{}])
+    if not hosts:
+        hosts.append({})
+    hosts[0]["host"] = api_host
+    tls = ingress_services.setdefault("tls", [{}])
+    if not tls:
+        tls.append({})
+    tls[0]["hosts"] = [api_host]
+
+if app_tls:
+    ingress_frontend = ((values.setdefault("ingress", {})).setdefault("frontend", {}))
+    tls = ingress_frontend.setdefault("tls", [{}])
+    if not tls:
+        tls.append({})
+    tls[0]["secretName"] = app_tls
+
+if api_tls:
+    ingress_services = ((values.setdefault("ingress", {})).setdefault("services", {}))
+    tls = ingress_services.setdefault("tls", [{}])
+    if not tls:
+        tls.append({})
+    tls[0]["secretName"] = api_tls
+
+with open(rendered_path, "w", encoding="utf-8") as f:
+    yaml.safe_dump(values, f, sort_keys=False)
+PY
+
+      - name: Deploy untrusted frontend release
+        run: |
+          set -euo pipefail
+          helm upgrade --install "$FRONTEND_RELEASE" "$CHART_PATH" \
+            --namespace "$NAMESPACE" \
+            -f "$VALUES_FILE" \
+            -f "$FRONTEND_OVERLAY_RENDERED" \
+            --wait --timeout "$FRONTEND_HELM_TIMEOUT"
+
+      - name: Deployment summary
+        run: |
+          set -euo pipefail
+          echo "Backend services IP: ${{ steps.backend_ips.outputs.services_ip }}"
+          echo "Backend NATS IP:     ${{ steps.backend_ips.outputs.nats_ip }}"
+          kubectl -n "$NAMESPACE" get pods -o wide
+          kubectl -n "$NAMESPACE" get svc

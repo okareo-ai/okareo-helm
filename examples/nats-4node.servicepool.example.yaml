@@ -1,0 +1,51 @@
+# Official NATS chart overlay for 4-node cluster in servicepool.
+
+config:
+  cluster:
+    enabled: true
+    replicas: 4
+    noAdvertise: true
+  jetstream:
+    enabled: false
+
+container:
+  image:
+    repository: nats
+    tag: 2.14.0-alpine
+  resources:
+    requests:
+      cpu: 200m
+      memory: 256Mi
+    limits:
+      cpu: 800m
+      memory: 1024Mi
+
+service:
+  merge:
+    spec:
+      type: LoadBalancer
+
+podTemplate:
+  topologySpreadConstraints:
+    kubernetes.io/hostname:
+      maxSkew: 1
+      whenUnsatisfiable: DoNotSchedule
+  merge:
+    spec:
+      nodeSelector:
+        agentpool: servicepool
+      tolerations:
+        - key: dedicated
+          operator: Equal
+          value: backend
+          effect: NoSchedule
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - topologyKey: kubernetes.io/hostname
+              labelSelector:
+                matchLabels:
+                  app.kubernetes.io/component: nats
+
+natsBox:
+  enabled: false

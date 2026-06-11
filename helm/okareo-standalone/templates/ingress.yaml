@@ -1,0 +1,113 @@
+{{- $hostlessKey := "__hostless__" -}}
+{{- $frontendRootHosts := dict -}}
+{{- $servicesIngressEnabled := and .Values.ingress.services.enabled (or .Values.services.enabled .Values.crossClusterApi.enabled) -}}
+{{- $defaultServicesBackendName := printf "%s-services" (include "okareo-standalone.fullname" .) -}}
+{{- $servicesBackendName := ternary .Values.crossClusterApi.serviceName $defaultServicesBackendName .Values.crossClusterApi.enabled -}}
+{{- $servicesBackendPort := ternary .Values.crossClusterApi.servicePort .Values.services.service.port .Values.crossClusterApi.enabled -}}
+{{- if and .Values.crossClusterApi.enabled (not .Values.crossClusterApi.endpointIP) -}}
+{{- fail "crossClusterApi.enabled=true requires crossClusterApi.endpointIP to be set" -}}
+{{- end -}}
+{{- if and .Values.frontend.enabled .Values.ingress.frontend.enabled -}}
+{{- range .Values.ingress.frontend.hosts -}}
+{{- $ruleHost := default $hostlessKey .host -}}
+{{- range .paths -}}
+{{- if eq .path "/" -}}
+{{- $_ := set $frontendRootHosts $ruleHost true -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+
+{{- if $servicesIngressEnabled -}}
+{{- range .Values.ingress.services.hosts -}}
+{{- $ruleHost := default $hostlessKey .host -}}
+{{- range .paths -}}
+{{- if and (eq .path "/") (hasKey $frontendRootHosts $ruleHost) -}}
+{{- if eq $ruleHost $hostlessKey -}}
+{{- fail "ingress.frontend and ingress.services cannot both claim path '/' when host is empty (hostless rules)" -}}
+{{- else -}}
+{{- fail (printf "ingress.frontend and ingress.services cannot both claim path '/' for host %q" $ruleHost) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end }}
+
+{{- if $servicesIngressEnabled }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "okareo-standalone.fullname" . }}-services
+  labels:
+    {{- include "okareo-standalone.labels" . | nindent 4 }}
+    app.kubernetes.io/component: services
+  {{- with .Values.ingress.services.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- with .Values.ingress.services.className }}
+  ingressClassName: {{ . }}
+  {{- end }}
+  rules:
+    {{- range .Values.ingress.services.hosts }}
+    - {{- if .host }}
+      host: {{ .host | quote }}
+      {{- end }}
+      http:
+        paths:
+          {{- range .paths }}
+          - path: {{ .path }}
+            pathType: {{ .pathType }}
+            backend:
+              service:
+                name: {{ $servicesBackendName }}
+                port:
+                  number: {{ $servicesBackendPort }}
+          {{- end }}
+    {{- end }}
+  {{- with .Values.ingress.services.tls }}
+  tls:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+---
+{{- end }}
+
+{{- if and .Values.frontend.enabled .Values.ingress.frontend.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "okareo-standalone.fullname" . }}-frontend
+  labels:
+    {{- include "okareo-standalone.labels" . | nindent 4 }}
+    app.kubernetes.io/component: frontend
+  {{- with .Values.ingress.frontend.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- with .Values.ingress.frontend.className }}
+  ingressClassName: {{ . }}
+  {{- end }}
+  rules:
+    {{- range .Values.ingress.frontend.hosts }}
+    - {{- if .host }}
+      host: {{ .host | quote }}
+      {{- end }}
+      http:
+        paths:
+          {{- range .paths }}
+          - path: {{ .path }}
+            pathType: {{ .pathType }}
+            backend:
+              service:
+                name: {{ include "okareo-standalone.fullname" $ }}-frontend
+                port:
+                  number: {{ $.Values.frontend.service.port }}
+          {{- end }}
+    {{- end }}
+  {{- with .Values.ingress.frontend.tls }}
+  tls:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+{{- end }}

@@ -1,0 +1,11 @@
+nats:
+  external:
+    enabled: true
+    url: nats://<NATS_EXTERNAL_IP_OR_DNS>:4222
+  server:
+    # Optional backend override; leave empty for in-cluster service DNS default.
+    url: ""
+  service:
+    loadBalancerSourceRanges:
+      - <TRUSTED_CIDR_1>
+      - <TRUSTED_CIDR_2>

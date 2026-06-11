@@ -1,0 +1,16 @@
+# Single-cluster all-in-chart deployment.
+
+frontend:
+  enabled: true
+
+services:
+  enabled: true
+
+redis:
+  enabled: true
+
+nats:
+  enabled: true
+
+db:
+  enabled: false

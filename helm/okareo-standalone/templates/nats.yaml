@@ -1,0 +1,110 @@
+{{- if .Values.nats.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "okareo-standalone.fullname" . }}-nats
+  labels:
+    {{- include "okareo-standalone.labels" . | nindent 4 }}
+    app.kubernetes.io/component: nats
+spec:
+  {{- if .Values.nats.external.enabled }}
+  type: LoadBalancer
+  {{- if .Values.nats.service.loadBalancerSourceRanges }}
+  loadBalancerSourceRanges:
+    {{- toYaml .Values.nats.service.loadBalancerSourceRanges | nindent 4 }}
+  {{- end }}
+  {{- else }}
+  type: {{ .Values.nats.service.type }}
+  {{- end }}
+  selector:
+    {{- include "okareo-standalone.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: nats
+  ports:
+    - name: nats
+      port: {{ .Values.nats.service.port }}
+      targetPort: {{ .Values.nats.service.port }}
+{{- if .Values.nats.aliasService.enabled }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Values.nats.aliasService.name }}
+  labels:
+    {{- include "okareo-standalone.labels" . | nindent 4 }}
+    app.kubernetes.io/component: nats
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "okareo-standalone.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: nats
+  ports:
+    - name: nats
+      port: {{ .Values.nats.service.port }}
+      targetPort: {{ .Values.nats.service.port }}
+{{- end }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "okareo-standalone.fullname" . }}-nats
+  labels:
+    {{- include "okareo-standalone.labels" . | nindent 4 }}
+    app.kubernetes.io/component: nats
+spec:
+  replicas: {{ .Values.nats.replicaCount }}
+  {{- with .Values.nats.strategy }}
+  strategy:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "okareo-standalone.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: nats
+  template:
+    metadata:
+      labels:
+        {{- include "okareo-standalone.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: nats
+    spec:
+      {{- with .Values.nats.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.nats.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.nats.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: nats
+          image: "{{ .Values.images.nats.repository }}:{{ .Values.images.nats.tag }}"
+          imagePullPolicy: {{ .Values.images.nats.pullPolicy }}
+          ports:
+            - containerPort: {{ .Values.nats.service.port }}
+          resources:
+            {{- toYaml .Values.nats.resources | nindent 12 }}
+{{- else if .Values.nats.aliasService.enabled }}
+{{- $serverUrl := default "" .Values.nats.server.url -}}
+{{- $serverHost := regexReplaceAll "^nats://([^:/]+)(:[0-9]+)?/?$" $serverUrl "$1" -}}
+{{- if eq $serverHost $serverUrl }}
+{{- $serverHost = "" -}}
+{{- end }}
+{{- if and $serverHost (not (contains "." $serverHost)) -}}
+{{- $serverHost = printf "%s.%s.svc.cluster.local" $serverHost .Release.Namespace -}}
+{{- end }}
+{{- $defaultExternalName := printf "%s.%s.svc.cluster.local" "okareo-nats" .Release.Namespace -}}
+{{- $externalName := .Values.nats.aliasService.externalName | default $serverHost | default $defaultExternalName -}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Values.nats.aliasService.name }}
+  labels:
+    {{- include "okareo-standalone.labels" . | nindent 4 }}
+    app.kubernetes.io/component: nats
+spec:
+  type: ExternalName
+  externalName: {{ $externalName | quote }}
+{{- end }}

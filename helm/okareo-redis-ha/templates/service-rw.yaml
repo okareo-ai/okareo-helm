@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "okareo-redis-ha.rwServiceName" . }}
+  labels:
+    {{- include "okareo-redis-ha.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.service.readWrite.type }}
+  ports:
+    - name: redis
+      port: {{ .Values.service.readWrite.port }}
+      targetPort: redis
+  selector:
+    {{- include "okareo-redis-ha.selectorLabels" . | nindent 4 }}
+    statefulset.kubernetes.io/pod-name: {{ include "okareo-redis-ha.fullname" . }}-0

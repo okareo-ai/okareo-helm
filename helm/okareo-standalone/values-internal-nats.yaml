@@ -1,0 +1,10 @@
+nats:
+  external:
+    enabled: false
+    url: ""
+  server:
+    # Optional backend override; leave empty for in-cluster service DNS default.
+    url: ""
+  service:
+    type: ClusterIP
+    loadBalancerSourceRanges: []

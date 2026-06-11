@@ -1,0 +1,44 @@
+# Legacy compatibility note:
+# For the recommended architecture, prefer deploy/values/cluster-*.example.yaml overlays.
+# This file remains as a single-cluster example only.
+
+services:
+  enabled: true
+  replicaCount: 2
+  nodeSelector:
+    agentpool: svcpool
+  tolerations:
+    - key: dedicated
+      operator: Equal
+      value: services
+      effect: NoSchedule
+
+frontend:
+  enabled: true
+  nodeSelector:
+    agentpool: basepool
+  tolerations:
+    - key: dedicated
+      operator: Equal
+      value: base
+      effect: NoSchedule
+
+redis:
+  enabled: true
+  nodeSelector:
+    agentpool: basepool
+  tolerations:
+    - key: dedicated
+      operator: Equal
+      value: base
+      effect: NoSchedule
+
+nats:
+  enabled: true
+  nodeSelector:
+    agentpool: basepool
+  tolerations:
+    - key: dedicated
+      operator: Equal
+      value: base
+      effect: NoSchedule
