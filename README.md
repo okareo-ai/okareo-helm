@@ -8,9 +8,9 @@ The Kubernetes deployment can be achieved via GitHub Actions or the CLI. Quick s
 
 ### Shared prerequisites (applies to both GitHub Actions and CLI)
 
-- AKS cluster prerequisites:
-  - Backend cluster has node pool `servicepool` (and matching toleration policy if used).
-  - Frontend cluster has node pool `frontendpool` (and matching toleration policy if used).
+- Provider cluster prerequisites:
+  - Backend cluster has a dedicated node pool/node group for services workloads (with matching labels/taints/tolerations/affinity if used).
+  - Frontend cluster has a dedicated node pool/node group for frontend workloads (with matching labels/taints/tolerations/affinity if used).
   - Frontend cluster has an ingress controller installed. `ingress-nginx` is the documented example (guide: https://docs.okareo.com/standalone/deploy-kubernetes#2-ensure-ingress-controller), but other ingress controllers are supported if you adapt ingress class/annotations.
   - TLS is configured for frontend/API ingress. `cert-manager` + `ClusterIssuer` is recommended (guide: https://docs.okareo.com/standalone/tls), but manual/corporate-CA certificate provisioning is also supported.
   - DNS records for `app.<domain>` and `api.<domain>` point to the frontend ingress endpoint (create `A` records for static LB IPs or `CNAME` records for hostname endpoints, then verify resolution before frontend workflow). For temporary non-production testing, you can use IP/path-based routing, but host-based DNS is recommended for production.
