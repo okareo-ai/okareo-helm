@@ -14,8 +14,13 @@
 {{- if and .Values.services.enabled (not .Values.nats.enabled) (not .Values.nats.server.url) -}}
 {{- fail "services.enabled=true with nats.enabled=false requires nats.server.url to be set" -}}
 {{- end -}}
+{{- if and .Values.services.enabled .Values.customCa.enabled (not .Values.customCa.secretName) -}}
+{{- fail "customCa.enabled=true requires customCa.secretName to be set" -}}
+{{- end -}}
 {{- $waitForFileSeconds := int (default 300 .Values.services.runtimeSecrets.waitForFileSeconds) -}}
 {{- $servicesSsoEnabled := false -}}
+{{- $proxyEnabledForServices := and .Values.proxy.enabled .Values.proxy.components.services -}}
+{{- $customCaEnabled := and .Values.customCa.enabled .Values.customCa.secretName -}}
 {{- range .Values.services.extraEnv -}}
 {{- if and (kindIs "map" .) (eq (default "" .name) "OKAREO_STANDALONE_AUTH_MODE") (eq (lower (toString (default "" .value))) "sso") -}}
 {{- $servicesSsoEnabled = true -}}
@@ -256,6 +261,46 @@ spec:
                   key: OKAREO_APP_DOMAIN
             - name: AIRGAP_WEBHOOK_NOTIFICATIONS_ENABLED
               value: {{ ternary "true" "false" .Values.services.airgapWebhookNotificationsEnabled | quote }}
+            {{- if $proxyEnabledForServices }}
+            {{- with .Values.proxy.httpProxy }}
+            - name: HTTP_PROXY
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.proxy.httpsProxy }}
+            - name: HTTPS_PROXY
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.proxy.noProxy }}
+            - name: NO_PROXY
+              value: {{ . | quote }}
+            {{- if $.Values.proxy.includeLowercase }}
+            - name: no_proxy
+              value: {{ . | quote }}
+            {{- end }}
+            {{- end }}
+            {{- end }}
+            {{- if $customCaEnabled }}
+            {{- if .Values.customCa.setSslCertFileEnv }}
+            - name: SSL_CERT_FILE
+              value: {{ .Values.customCa.mountPath | quote }}
+            {{- end }}
+            {{- if .Values.customCa.setNodeExtraCaCertsEnv }}
+            - name: NODE_EXTRA_CA_CERTS
+              value: {{ .Values.customCa.mountPath | quote }}
+            {{- end }}
+            {{- end }}
+            {{- with .Values.config.security.cors.allowedOrigins }}
+            - name: CORS_ALLOWED_ORIGINS
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.config.security.cors.allowedOriginsRegex }}
+            - name: CORS_ALLOWED_ORIGINS_REGEX
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.config.security.cors.alwaysAllowPathsRegex }}
+            - name: CORS_ALWAYS_ALLOW_PATHS_REGEX
+              value: {{ . | quote }}
+            {{- end }}
             {{- with .Values.services.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
@@ -263,11 +308,17 @@ spec:
           envFrom:
             {{- toYaml . | nindent 12 }}
           {{- end }}
-          {{- if or .Values.modelConfig.enabled .Values.services.extraVolumeMounts }}
+          {{- if or .Values.modelConfig.enabled .Values.services.extraVolumeMounts $customCaEnabled }}
           volumeMounts:
             {{- if .Values.modelConfig.enabled }}
             - name: model-config
               mountPath: {{ .Values.modelConfig.mountPath | quote }}
+              readOnly: true
+            {{- end }}
+            {{- if $customCaEnabled }}
+            - name: custom-ca-bundle
+              mountPath: {{ .Values.customCa.mountPath | quote }}
+              subPath: {{ .Values.customCa.secretKey | quote }}
               readOnly: true
             {{- end }}
             {{- with .Values.services.extraVolumeMounts }}
@@ -279,12 +330,20 @@ spec:
         {{- with .Values.services.extraContainers }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
-      {{- if or .Values.modelConfig.enabled .Values.services.extraVolumes }}
+      {{- if or .Values.modelConfig.enabled .Values.services.extraVolumes $customCaEnabled }}
       volumes:
         {{- if .Values.modelConfig.enabled }}
         - name: model-config
           configMap:
             name: {{ include "okareo-standalone.fullname" . }}-model-config
+        {{- end }}
+        {{- if $customCaEnabled }}
+        - name: custom-ca-bundle
+          secret:
+            secretName: {{ .Values.customCa.secretName | quote }}
+            items:
+              - key: {{ .Values.customCa.secretKey | quote }}
+                path: {{ .Values.customCa.secretKey | quote }}
         {{- end }}
         {{- with .Values.services.extraVolumes }}
         {{- toYaml . | nindent 8 }}

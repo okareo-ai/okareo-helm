@@ -30,6 +30,12 @@ serviceAccount:
   name: ""
 
 ingress:
+  bufferTuning:
+    # Adds first-class ingress annotations for large OIDC/JWT headers.
+    enabled: false
+    proxyBufferSize: "32k"
+    clientHeaderBufferSize: "16k"
+    largeClientHeaderBuffers: "8 32k"
   frontend:
     enabled: true
     className: nginx
@@ -110,6 +116,18 @@ ingressNginxTcp:
 frontend:
   enabled: true
   replicaCount: 1
+  strategy:
+    # Match services rollout defaults for small fixed pools.
+    # Prevents deadlock when anti-affinity leaves no room for surge pods.
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 0
+      maxUnavailable: 1
+  edgeHeaderBufferTuning:
+    # Optional frontend edge header buffer hints for frontend runtimes that support these env vars.
+    enabled: false
+    clientHeaderBufferSize: "16k"
+    largeClientHeaderBuffers: "8 32k"
   service:
     type: ClusterIP
     port: 3000
@@ -121,6 +139,26 @@ frontend:
   extraEnvFrom: []
   extraVolumeMounts: []
   extraVolumes: []
+
+proxy:
+  # Enterprise outbound proxy settings. Applied only to selected components.
+  enabled: false
+  httpProxy: ""
+  httpsProxy: ""
+  noProxy: ""
+  includeLowercase: true
+  components:
+    services: true
+    frontend: true
+
+customCa:
+  # Optional additional CA bundle mounted into pods for enterprise/internal PKI trust.
+  enabled: false
+  secretName: ""
+  secretKey: ca.crt
+  mountPath: /etc/ssl/certs/okareo-custom-ca.crt
+  setSslCertFileEnv: true
+  setNodeExtraCaCertsEnv: true
 
 services:
   enabled: true
@@ -273,6 +311,14 @@ config:
   disableTelemetry: true
   okareoApiGateway: ""
   okareoAppDomain: ""
+  security:
+    cors:
+      # Comma-separated origins, for example: "https://app.example.com,https://admin.example.com"
+      allowedOrigins: ""
+      # Regex takes precedence when non-empty.
+      allowedOriginsRegex: ""
+      # Regex for paths that should always allow CORS.
+      alwaysAllowPathsRegex: ""
 
 modelConfig:
   enabled: true

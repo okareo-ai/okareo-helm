@@ -126,6 +126,59 @@ frontend:
       value: sso
 ```
 
+## Enterprise networking and security knobs
+
+The chart supports optional enterprise-focused controls for ingress/header handling,
+egress proxying, custom CA trust, and CORS env configuration.
+
+- Ingress buffer tuning:
+  - `ingress.bufferTuning.enabled=true`
+  - `ingress.bufferTuning.proxyBufferSize`
+  - `ingress.bufferTuning.clientHeaderBufferSize`
+  - `ingress.bufferTuning.largeClientHeaderBuffers`
+- Frontend edge header buffer env hints:
+  - `frontend.edgeHeaderBufferTuning.enabled=true`
+  - `frontend.edgeHeaderBufferTuning.clientHeaderBufferSize`
+  - `frontend.edgeHeaderBufferTuning.largeClientHeaderBuffers`
+- Egress proxy env injection:
+  - `proxy.enabled=true`
+  - `proxy.httpProxy`, `proxy.httpsProxy`, `proxy.noProxy`
+  - `proxy.includeLowercase=true` (also sets `no_proxy`)
+  - `proxy.components.services`, `proxy.components.frontend`
+- Custom CA bundle mount:
+  - `customCa.enabled=true`
+  - `customCa.secretName` (required)
+  - `customCa.secretKey`, `customCa.mountPath`
+  - `customCa.setSslCertFileEnv`, `customCa.setNodeExtraCaCertsEnv`
+- CORS env values passed to services:
+  - `config.security.cors.allowedOrigins`
+  - `config.security.cors.allowedOriginsRegex`
+  - `config.security.cors.alwaysAllowPathsRegex`
+
+Example:
+
+```yaml
+ingress:
+  bufferTuning:
+    enabled: true
+
+proxy:
+  enabled: true
+  httpProxy: http://proxy.example:8080
+  httpsProxy: http://proxy.example:8080
+  noProxy: localhost,.svc,.svc.cluster.local,.cluster.local
+
+customCa:
+  enabled: true
+  secretName: corp-ca
+  secretKey: ca.crt
+
+config:
+  security:
+    cors:
+      allowedOrigins: https://app.example.com
+```
+
 ## Example: services-only chart deployment
 
 ```bash

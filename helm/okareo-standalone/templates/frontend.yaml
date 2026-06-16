@@ -1,4 +1,9 @@
 {{- if .Values.frontend.enabled }}
+{{- if and .Values.customCa.enabled (not .Values.customCa.secretName) -}}
+{{- fail "customCa.enabled=true requires customCa.secretName to be set" -}}
+{{- end -}}
+{{- $proxyEnabledForFrontend := and .Values.proxy.enabled .Values.proxy.components.frontend -}}
+{{- $customCaEnabled := and .Values.customCa.enabled .Values.customCa.secretName -}}
 apiVersion: v1
 kind: Service
 metadata:
@@ -25,6 +30,10 @@ metadata:
     app.kubernetes.io/component: frontend
 spec:
   replicas: {{ .Values.frontend.replicaCount }}
+  {{- with .Values.frontend.strategy }}
+  strategy:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
   selector:
     matchLabels:
       {{- include "okareo-standalone.selectorLabels" . | nindent 6 }}
@@ -74,6 +83,40 @@ spec:
                 configMapKeyRef:
                   name: {{ include "okareo-standalone.fullname" . }}-config
                   key: OKAREO_APP_DOMAIN
+            {{- if .Values.frontend.edgeHeaderBufferTuning.enabled }}
+            - name: CLIENT_HEADER_BUFFER_SIZE
+              value: {{ .Values.frontend.edgeHeaderBufferTuning.clientHeaderBufferSize | quote }}
+            - name: LARGE_CLIENT_HEADER_BUFFERS
+              value: {{ .Values.frontend.edgeHeaderBufferTuning.largeClientHeaderBuffers | quote }}
+            {{- end }}
+            {{- if $proxyEnabledForFrontend }}
+            {{- with .Values.proxy.httpProxy }}
+            - name: HTTP_PROXY
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.proxy.httpsProxy }}
+            - name: HTTPS_PROXY
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.proxy.noProxy }}
+            - name: NO_PROXY
+              value: {{ . | quote }}
+            {{- if $.Values.proxy.includeLowercase }}
+            - name: no_proxy
+              value: {{ . | quote }}
+            {{- end }}
+            {{- end }}
+            {{- end }}
+            {{- if $customCaEnabled }}
+            {{- if .Values.customCa.setSslCertFileEnv }}
+            - name: SSL_CERT_FILE
+              value: {{ .Values.customCa.mountPath | quote }}
+            {{- end }}
+            {{- if .Values.customCa.setNodeExtraCaCertsEnv }}
+            - name: NODE_EXTRA_CA_CERTS
+              value: {{ .Values.customCa.mountPath | quote }}
+            {{- end }}
+            {{- end }}
             {{- with .Values.frontend.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
@@ -81,14 +124,32 @@ spec:
           envFrom:
             {{- toYaml . | nindent 12 }}
           {{- end }}
-          {{- with .Values.frontend.extraVolumeMounts }}
+          {{- if or .Values.frontend.extraVolumeMounts $customCaEnabled }}
           volumeMounts:
+            {{- if $customCaEnabled }}
+            - name: custom-ca-bundle
+              mountPath: {{ .Values.customCa.mountPath | quote }}
+              subPath: {{ .Values.customCa.secretKey | quote }}
+              readOnly: true
+            {{- end }}
+            {{- with .Values.frontend.extraVolumeMounts }}
             {{- toYaml . | nindent 12 }}
+            {{- end }}
           {{- end }}
           resources:
             {{- toYaml .Values.frontend.resources | nindent 12 }}
-      {{- with .Values.frontend.extraVolumes }}
+      {{- if or .Values.frontend.extraVolumes $customCaEnabled }}
       volumes:
+        {{- if $customCaEnabled }}
+        - name: custom-ca-bundle
+          secret:
+            secretName: {{ .Values.customCa.secretName | quote }}
+            items:
+              - key: {{ .Values.customCa.secretKey | quote }}
+                path: {{ .Values.customCa.secretKey | quote }}
+        {{- end }}
+        {{- with .Values.frontend.extraVolumes }}
         {{- toYaml . | nindent 8 }}
+        {{- end }}
       {{- end }}
 {{- end }}

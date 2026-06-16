@@ -4,6 +4,10 @@
 {{- $defaultServicesBackendName := printf "%s-services" (include "okareo-standalone.fullname" .) -}}
 {{- $servicesBackendName := ternary .Values.crossClusterApi.serviceName $defaultServicesBackendName .Values.crossClusterApi.enabled -}}
 {{- $servicesBackendPort := ternary .Values.crossClusterApi.servicePort .Values.services.service.port .Values.crossClusterApi.enabled -}}
+{{- $bufferTuningEnabled := and .Values.ingress.bufferTuning .Values.ingress.bufferTuning.enabled -}}
+{{- $proxyBufferSize := default "32k" .Values.ingress.bufferTuning.proxyBufferSize -}}
+{{- $clientHeaderBufferSize := default "16k" .Values.ingress.bufferTuning.clientHeaderBufferSize -}}
+{{- $largeClientHeaderBuffers := default "8 32k" .Values.ingress.bufferTuning.largeClientHeaderBuffers -}}
 {{- if and .Values.crossClusterApi.enabled (not .Values.crossClusterApi.endpointIP) -}}
 {{- fail "crossClusterApi.enabled=true requires crossClusterApi.endpointIP to be set" -}}
 {{- end -}}
@@ -34,6 +38,18 @@
 {{- end }}
 
 {{- if $servicesIngressEnabled }}
+{{- $servicesAnnotations := dict -}}
+{{- with .Values.ingress.services.annotations -}}
+{{- $servicesAnnotations = fromYaml (toYaml .) -}}
+{{- end -}}
+{{- if $bufferTuningEnabled -}}
+{{- if not (hasKey $servicesAnnotations "nginx.ingress.kubernetes.io/proxy-buffer-size") -}}
+{{- $_ := set $servicesAnnotations "nginx.ingress.kubernetes.io/proxy-buffer-size" ($proxyBufferSize | toString) -}}
+{{- end -}}
+{{- if not (hasKey $servicesAnnotations "nginx.ingress.kubernetes.io/server-snippet") -}}
+{{- $_ := set $servicesAnnotations "nginx.ingress.kubernetes.io/server-snippet" (printf "client_header_buffer_size %s;\nlarge_client_header_buffers %s;" $clientHeaderBufferSize $largeClientHeaderBuffers) -}}
+{{- end -}}
+{{- end -}}
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
@@ -41,7 +57,7 @@ metadata:
   labels:
     {{- include "okareo-standalone.labels" . | nindent 4 }}
     app.kubernetes.io/component: services
-  {{- with .Values.ingress.services.annotations }}
+  {{- with $servicesAnnotations }}
   annotations:
     {{- toYaml . | nindent 4 }}
   {{- end }}
@@ -74,6 +90,18 @@ spec:
 {{- end }}
 
 {{- if and .Values.frontend.enabled .Values.ingress.frontend.enabled }}
+{{- $frontendAnnotations := dict -}}
+{{- with .Values.ingress.frontend.annotations -}}
+{{- $frontendAnnotations = fromYaml (toYaml .) -}}
+{{- end -}}
+{{- if $bufferTuningEnabled -}}
+{{- if not (hasKey $frontendAnnotations "nginx.ingress.kubernetes.io/proxy-buffer-size") -}}
+{{- $_ := set $frontendAnnotations "nginx.ingress.kubernetes.io/proxy-buffer-size" ($proxyBufferSize | toString) -}}
+{{- end -}}
+{{- if not (hasKey $frontendAnnotations "nginx.ingress.kubernetes.io/server-snippet") -}}
+{{- $_ := set $frontendAnnotations "nginx.ingress.kubernetes.io/server-snippet" (printf "client_header_buffer_size %s;\nlarge_client_header_buffers %s;" $clientHeaderBufferSize $largeClientHeaderBuffers) -}}
+{{- end -}}
+{{- end -}}
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
@@ -81,7 +109,7 @@ metadata:
   labels:
     {{- include "okareo-standalone.labels" . | nindent 4 }}
     app.kubernetes.io/component: frontend
-  {{- with .Values.ingress.frontend.annotations }}
+  {{- with $frontendAnnotations }}
   annotations:
     {{- toYaml . | nindent 4 }}
   {{- end }}
