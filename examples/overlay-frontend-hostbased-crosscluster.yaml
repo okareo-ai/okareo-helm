@@ -2,6 +2,7 @@
 # - app host routes to in-cluster frontend service
 # - api host routes to backend cluster services LB via local upstream service/endpoints
 # - nats external route is provided via ingress-nginx TCP mapping config map
+# IMPORTANT: Replace endpointIP/host/tls values below before deploying.
 
 frontend:
   enabled: true
@@ -23,13 +24,13 @@ crossClusterApi:
   enabled: true
   serviceName: okareo-api-external
   servicePort: 8000
-  endpointIP: 4.246.32.234
+  endpointIP: <BACKEND_SERVICES_LB_IP>
 
 crossClusterNats:
   enabled: true
   serviceName: okareo-nats-external
   servicePort: 4222
-  endpointIP: 172.193.226.182
+  endpointIP: <BACKEND_NATS_LB_IP>
 
 ingressNginxTcp:
   enabled: true
@@ -45,13 +46,13 @@ ingress:
       nginx.ingress.kubernetes.io/ssl-redirect: "true"
       nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
     hosts:
-      - host: app.52-225-50-10.nip.io
+      - host: app.example.com
         paths:
           - path: /
             pathType: Prefix
     tls:
       - hosts:
-          - app.52-225-50-10.nip.io
+          - app.example.com
         secretName: okareo-le-tls-frontend
   services:
     enabled: true
@@ -64,11 +65,11 @@ ingress:
       nginx.ingress.kubernetes.io/proxy-send-timeout: "300"
       nginx.ingress.kubernetes.io/proxy-read-timeout: "7200"
     hosts:
-      - host: api.52-225-50-10.nip.io
+      - host: api.example.com
         paths:
           - path: /
             pathType: Prefix
     tls:
       - hosts:
-          - api.52-225-50-10.nip.io
+          - api.example.com
         secretName: okareo-le-tls-api

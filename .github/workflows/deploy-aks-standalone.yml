@@ -1,0 +1,969 @@
+name: Deploy Okareo Standalone to AKS
+
+on:
+  workflow_dispatch:
+    inputs:
+      aks_resource_group:
+        description: Azure resource group containing AKS cluster
+        required: true
+        type: string
+      aks_cluster_name:
+        description: AKS cluster name
+        required: true
+        type: string
+      kubernetes_namespace:
+        description: Kubernetes namespace for release
+        required: true
+        default: okareo
+        type: string
+      helm_release_name:
+        description: Helm release name
+        required: true
+        default: okareo-services
+        type: string
+      chart_path:
+        description: Path to chart in this repo
+        required: true
+        default: helm/okareo-standalone
+        type: string
+      values_overlay_path:
+        description: Optional additional values file path in this repo
+        required: false
+        default: ""
+        type: string
+      deploy_external_redis_nats:
+        description: Deploy external Redis HA and NATS Helm releases before app chart
+        required: true
+        default: true
+        type: boolean
+      redis_release_name:
+        description: Helm release name for external Redis HA chart
+        required: true
+        default: okareo-redis-ha
+        type: string
+      redis_chart_path:
+        description: Chart path for external Redis HA chart
+        required: true
+        default: helm/okareo-redis-ha
+        type: string
+      redis_values_path:
+        description: Values file path for external Redis HA chart
+        required: true
+        default: deploy/values/redis-ha-4node.servicepool.example.yaml
+        type: string
+      nats_release_name:
+        description: Helm release name for external NATS chart
+        required: true
+        default: okareo-nats
+        type: string
+      nats_values_path:
+        description: Values file path for external NATS chart
+        required: true
+        default: deploy/values/nats-4node.servicepool.example.yaml
+        type: string
+      create_namespace:
+        description: Create namespace if missing
+        required: true
+        default: true
+        type: boolean
+      okareo_api_gateway:
+        description: Optional override for OKAREO_API_GATEWAY (URL or host[:port])
+        required: false
+        default: ""
+        type: string
+      okareo_app_domain:
+        description: Optional override for OKAREO_APP_DOMAIN (URL or host[:port])
+        required: false
+        default: ""
+        type: string
+      fail_on_placeholders:
+        description: Fail if values file still has <PLACEHOLDER> tokens
+        required: true
+        default: true
+        type: boolean
+      helm_timeout:
+        description: Helm wait timeout (e.g. 20m)
+        required: true
+        default: 20m
+        type: string
+      exposure_mode:
+        description: Public endpoint mode (ingress or direct-lb)
+        required: true
+        default: ingress
+        type: choice
+        options:
+          - ingress
+          - direct-lb
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      AKS_RESOURCE_GROUP: ${{ inputs.aks_resource_group }}
+      AKS_CLUSTER_NAME: ${{ inputs.aks_cluster_name }}
+      K8S_NAMESPACE: ${{ inputs.kubernetes_namespace }}
+      RELEASE_NAME: ${{ inputs.helm_release_name }}
+      VALUES_FILE: /tmp/okareo-values.yaml
+      VALUES_OVERLAY_FILE: ${{ inputs.values_overlay_path }}
+      DEPLOY_EXTERNAL_REDIS_NATS: ${{ inputs.deploy_external_redis_nats }}
+      REDIS_RELEASE_NAME: ${{ inputs.redis_release_name }}
+      REDIS_CHART_PATH: ${{ inputs.redis_chart_path }}
+      REDIS_VALUES_PATH: ${{ inputs.redis_values_path }}
+      NATS_RELEASE_NAME: ${{ inputs.nats_release_name }}
+      NATS_VALUES_PATH: ${{ inputs.nats_values_path }}
+      CHART_PATH: ${{ inputs.chart_path }}
+      CREATE_NAMESPACE: ${{ inputs.create_namespace }}
+      OKAREO_API_GATEWAY_OVERRIDE: ${{ inputs.okareo_api_gateway }}
+      OKAREO_APP_DOMAIN_OVERRIDE: ${{ inputs.okareo_app_domain }}
+      HELM_TIMEOUT: ${{ inputs.helm_timeout }}
+      EXPOSURE_MODE: ${{ inputs.exposure_mode }}
+      OKAREO_REGISTRY_SERVER: ${{ secrets.OKAREO_REGISTRY_SERVER }}
+      OKAREO_REGISTRY_USERNAME: ${{ secrets.OKAREO_REGISTRY_USERNAME }}
+      OKAREO_REGISTRY_PASSWORD: ${{ secrets.OKAREO_REGISTRY_PASSWORD }}
+      OKAREO_VALUES_YAML: ${{ vars.OKAREO_VALUES_YAML }}
+      OKAREO_VALUES_YAML_B64: ${{ vars.OKAREO_VALUES_YAML_B64 }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Set AKS context
+        uses: azure/aks-set-context@v4
+        with:
+          resource-group: ${{ env.AKS_RESOURCE_GROUP }}
+          cluster-name: ${{ env.AKS_CLUSTER_NAME }}
+
+      - name: Setup kubectl
+        uses: azure/setup-kubectl@v4
+
+      - name: Setup Helm
+        uses: azure/setup-helm@v4
+
+      - name: Materialize values file from GitHub variable
+        run: |
+          set -euo pipefail
+          mkdir -p "$(dirname "$VALUES_FILE")"
+
+          if [ -n "${OKAREO_VALUES_YAML_B64:-}" ]; then
+            printf '%s' "$OKAREO_VALUES_YAML_B64" | base64 -d > "$VALUES_FILE"
+            echo "Created $VALUES_FILE from variable OKAREO_VALUES_YAML_B64"
+            exit 0
+          fi
+
+          if [ -n "${OKAREO_VALUES_YAML:-}" ]; then
+            printf '%s' "$OKAREO_VALUES_YAML" > "$VALUES_FILE"
+            echo "Created $VALUES_FILE from variable OKAREO_VALUES_YAML"
+            exit 0
+          fi
+
+          echo "No values YAML provided. Set GitHub variable OKAREO_VALUES_YAML or OKAREO_VALUES_YAML_B64."
+          exit 1
+
+      - name: Verify files
+        run: |
+          set -euo pipefail
+
+          # Backward-compat: map legacy split-overlay names to current names.
+          case "${VALUES_OVERLAY_FILE:-}" in
+            "deploy/values/cluster-untrusted-frontend.example.yaml")
+              VALUES_OVERLAY_FILE="deploy/values/cluster-frontend.example.yaml"
+              echo "VALUES_OVERLAY_FILE=$VALUES_OVERLAY_FILE" >> "$GITHUB_ENV"
+              echo "Mapped legacy overlay path to: $VALUES_OVERLAY_FILE"
+              ;;
+            "deploy/values/cluster-semitrusted-services.example.yaml")
+              VALUES_OVERLAY_FILE="deploy/values/cluster-backend-services.example.yaml"
+              echo "VALUES_OVERLAY_FILE=$VALUES_OVERLAY_FILE" >> "$GITHUB_ENV"
+              echo "Mapped legacy overlay path to: $VALUES_OVERLAY_FILE"
+              ;;
+          esac
+
+          test -f "$VALUES_FILE"
+          test -f "$CHART_PATH/Chart.yaml"
+          if [ -n "${VALUES_OVERLAY_FILE:-}" ]; then
+            test -f "$VALUES_OVERLAY_FILE"
+            echo "Using overlay: $VALUES_OVERLAY_FILE"
+          fi
+          if [ "$DEPLOY_EXTERNAL_REDIS_NATS" = "true" ]; then
+            test -f "$REDIS_CHART_PATH/Chart.yaml"
+            test -f "$REDIS_VALUES_PATH"
+            test -f "$NATS_VALUES_PATH"
+            echo "External Redis chart:  $REDIS_CHART_PATH"
+            echo "External Redis values: $REDIS_VALUES_PATH"
+            echo "External NATS values:  $NATS_VALUES_PATH"
+          fi
+          echo "Using values: $VALUES_FILE"
+          echo "Using chart: $CHART_PATH"
+
+      - name: Ensure namespace exists
+        run: |
+          set -euo pipefail
+          if [ "$CREATE_NAMESPACE" = "true" ]; then
+            kubectl create namespace "$K8S_NAMESPACE" --dry-run=client -o yaml | kubectl apply -f -
+          else
+            kubectl get namespace "$K8S_NAMESPACE" >/dev/null
+          fi
+
+      - name: Install Python YAML dependency
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install pyyaml
+
+      - name: Parse values metadata
+        id: parse_values
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import os
+          import re
+          import yaml
+
+          values_file = os.environ["VALUES_FILE"]
+          overlay_file = os.environ.get("VALUES_OVERLAY_FILE", "").strip()
+
+          with open(values_file, encoding="utf-8") as f:
+              values = yaml.safe_load(f) or {}
+
+          if overlay_file:
+              with open(overlay_file, encoding="utf-8") as f:
+                  overlay_values = yaml.safe_load(f) or {}
+              def deep_merge(base, override):
+                  if isinstance(base, dict) and isinstance(override, dict):
+                      merged = dict(base)
+                      for k, v in override.items():
+                          if k in merged:
+                              merged[k] = deep_merge(merged[k], v)
+                          else:
+                              merged[k] = v
+                      return merged
+                  return override
+              values = deep_merge(values, overlay_values)
+
+          secrets_cfg = values.get("secrets") or {}
+          secret_create = bool(secrets_cfg.get("create", True))
+          existing_secret_name = secrets_cfg.get("existingSecretName", "")
+
+          services_cfg = values.get("services") or {}
+          runtime_cfg = services_cfg.get("runtimeSecrets") or {}
+          runtime_source = str(runtime_cfg.get("source", "secretKeyRef"))
+          services_enabled = bool(services_cfg.get("enabled", True))
+          services_extra_env = services_cfg.get("extraEnv") or []
+
+          frontend_cfg = values.get("frontend") or {}
+          frontend_enabled = bool(frontend_cfg.get("enabled", True))
+          frontend_extra_env = frontend_cfg.get("extraEnv") or []
+
+          def has_sso_mode(extra_env):
+              for item in extra_env:
+                  if not isinstance(item, dict):
+                      continue
+                  if str(item.get("name", "")) != "OKAREO_STANDALONE_AUTH_MODE":
+                      continue
+                  value = item.get("value")
+                  if isinstance(value, str) and value.strip().lower() == "sso":
+                      return True
+              return False
+
+          services_sso_enabled = has_sso_mode(services_extra_env)
+          frontend_sso_enabled = has_sso_mode(frontend_extra_env)
+
+          db_cfg = values.get("db") or {}
+          db_enabled = bool(db_cfg.get("enabled", False))
+
+          redis_cfg = values.get("redis") or {}
+          redis_enabled = bool(redis_cfg.get("enabled", True))
+
+          nats_cfg = values.get("nats") or {}
+          nats_enabled = bool(nats_cfg.get("enabled", True))
+          nats_external_cfg = nats_cfg.get("external") or {}
+          nats_external_enabled = bool(nats_external_cfg.get("enabled", True))
+          values_nats_external_url = str(nats_external_cfg.get("url", "")).strip()
+
+          config_cfg = values.get("config") or {}
+          values_okareo_api_gateway = str(config_cfg.get("okareoApiGateway", "")).strip()
+          values_okareo_app_domain = str(config_cfg.get("okareoAppDomain", "")).strip()
+
+          placeholder_re = re.compile(r"<[A-Z0-9_\-]+>")
+          placeholder_lines = []
+          lines_to_scan = [values_file]
+          if overlay_file:
+              lines_to_scan.append(overlay_file)
+
+          for file_to_scan in lines_to_scan:
+              with open(file_to_scan, encoding="utf-8") as f:
+                  for i, line in enumerate(f, 1):
+                      if placeholder_re.search(line):
+                          placeholder_lines.append(f"{os.path.basename(file_to_scan)}:{i}")
+
+          enabled = {
+              "services": services_enabled,
+              "frontend": frontend_enabled,
+              "redis": redis_enabled,
+              "nats": nats_enabled,
+              "db": db_enabled,
+          }
+
+          pools = {}
+          for comp in ("services", "frontend", "redis", "nats", "db"):
+              if not enabled.get(comp, False):
+                  continue
+              selector = ((values.get(comp) or {}).get("nodeSelector") or {})
+              agentpool = selector.get("agentpool")
+              if agentpool:
+                  pools[comp] = agentpool
+
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as out:
+              out.write(f"secret_create={'true' if secret_create else 'false'}\n")
+              out.write(f"existing_secret_name={existing_secret_name}\n")
+              out.write(f"runtime_secrets_source={runtime_source}\n")
+              out.write(f"services_enabled={'true' if services_enabled else 'false'}\n")
+              out.write(f"services_sso_enabled={'true' if services_sso_enabled else 'false'}\n")
+              out.write(f"frontend_enabled={'true' if frontend_enabled else 'false'}\n")
+              out.write(f"frontend_sso_enabled={'true' if frontend_sso_enabled else 'false'}\n")
+              out.write(f"db_enabled={'true' if db_enabled else 'false'}\n")
+              out.write(f"redis_enabled={'true' if redis_enabled else 'false'}\n")
+              out.write(f"nats_enabled={'true' if nats_enabled else 'false'}\n")
+              out.write(f"values_nats_external_enabled={'true' if nats_external_enabled else 'false'}\n")
+              out.write(f"values_nats_external_url={values_nats_external_url}\n")
+              out.write(f"has_placeholders={'true' if placeholder_lines else 'false'}\n")
+              out.write(f"placeholder_lines={','.join(placeholder_lines[:50])}\n")
+              out.write(f"nodepool_map={json.dumps(pools)}\n")
+              out.write(f"values_okareo_api_gateway={values_okareo_api_gateway}\n")
+              out.write(f"values_okareo_app_domain={values_okareo_app_domain}\n")
+          PY
+
+      - name: Resolve ingress default NATS URL
+        if: ${{ inputs.exposure_mode == 'ingress' && steps.parse_values.outputs.services_enabled == 'true' && steps.parse_values.outputs.values_nats_external_enabled == 'true' && steps.parse_values.outputs.values_nats_external_url == '' }}
+        run: |
+          set -euo pipefail
+
+          get_ingress_endpoint() {
+            local ns="${1:-ingress-nginx}"
+            local svc="${2:-ingress-nginx-controller}"
+
+            for _ in $(seq 1 60); do
+              ip="$(kubectl -n "$ns" get svc "$svc" -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || true)"
+              host="$(kubectl -n "$ns" get svc "$svc" -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || true)"
+              if [ -n "$ip" ]; then
+                printf '%s' "$ip"
+                return 0
+              fi
+              if [ -n "$host" ]; then
+                printf '%s' "$host"
+                return 0
+              fi
+              sleep 5
+            done
+            return 1
+          }
+
+          INGRESS_EP="$(get_ingress_endpoint)" || {
+            echo "Failed to resolve ingress-nginx endpoint for default nats.external.url"
+            exit 1
+          }
+
+          NATS_EXTERNAL_URL="nats://${INGRESS_EP}:4222"
+          export NATS_EXTERNAL_URL
+
+          python - <<'PY'
+          import os
+          import yaml
+
+          values_file = os.environ["VALUES_FILE"]
+          nats_external_url = os.environ["NATS_EXTERNAL_URL"]
+
+          with open(values_file, encoding="utf-8") as f:
+              values = yaml.safe_load(f) or {}
+
+          nats_cfg = values.setdefault("nats", {})
+          external_cfg = nats_cfg.setdefault("external", {})
+          external_cfg["enabled"] = True
+          external_cfg["url"] = nats_external_url
+
+          with open(values_file, "w", encoding="utf-8") as f:
+              yaml.safe_dump(values, f, sort_keys=False)
+          PY
+
+          echo "Defaulted nats.external.url to ${NATS_EXTERNAL_URL}"
+
+      - name: Validate runtime secret source
+        run: |
+          set -euo pipefail
+          source="${{ steps.parse_values.outputs.runtime_secrets_source }}"
+          if [ "$source" != "secretKeyRef" ] && [ "$source" != "envFile" ]; then
+            echo "services.runtimeSecrets.source must be either secretKeyRef or envFile, got: $source"
+            exit 1
+          fi
+
+      - name: Enforce split-release naming safety
+        run: |
+          set -euo pipefail
+          SERVICES_ENABLED="${{ steps.parse_values.outputs.services_enabled }}"
+          FRONTEND_ENABLED="${{ steps.parse_values.outputs.frontend_enabled }}"
+
+          if [ "$SERVICES_ENABLED" = "true" ] && [ "$FRONTEND_ENABLED" = "false" ]; then
+            if [ "$RELEASE_NAME" != "okareo-services" ]; then
+              echo "services-only deployment detected. Use helm_release_name=okareo-services to avoid pruning other component releases."
+              exit 1
+            fi
+          fi
+
+          if [ "$SERVICES_ENABLED" = "false" ] && [ "$FRONTEND_ENABLED" = "true" ]; then
+            if [ "$RELEASE_NAME" != "okareo-frontend" ]; then
+              echo "frontend-only deployment detected. Use helm_release_name=okareo-frontend to avoid pruning other component releases."
+              exit 1
+            fi
+          fi
+
+          if [ "$SERVICES_ENABLED" = "true" ] && [ "$FRONTEND_ENABLED" = "true" ]; then
+            if [ "$RELEASE_NAME" = "okareo-services" ] || [ "$RELEASE_NAME" = "okareo-frontend" ]; then
+              echo "full-stack deployment detected. Do not use split release names (okareo-services/okareo-frontend) for full-stack mode."
+              exit 1
+            fi
+          fi
+
+      - name: Validate split-architecture floors and dependencies
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import os
+          import yaml
+
+          def deep_merge(base, override):
+              if isinstance(base, dict) and isinstance(override, dict):
+                  merged = dict(base)
+                  for k, v in override.items():
+                      if k in merged:
+                          merged[k] = deep_merge(merged[k], v)
+                      else:
+                          merged[k] = v
+                  return merged
+              return override
+
+          with open(os.environ["VALUES_FILE"], encoding="utf-8") as f:
+              values = yaml.safe_load(f) or {}
+
+          overlay_file = os.environ.get("VALUES_OVERLAY_FILE", "").strip()
+          if overlay_file:
+              with open(overlay_file, encoding="utf-8") as f:
+                  overlay = yaml.safe_load(f) or {}
+              values = deep_merge(values, overlay)
+
+          services = values.get("services") or {}
+          if bool(services.get("enabled", True)):
+              req = (services.get("resources") or {}).get("requests") or {}
+              cpu = str(req.get("cpu", ""))
+              mem = str(req.get("memory", ""))
+
+              def cpu_m(cpu_str):
+                  if not cpu_str:
+                      return -1
+                  if cpu_str.endswith("m"):
+                      return int(cpu_str[:-1])
+                  return int(float(cpu_str) * 1000)
+
+              def mem_mi(mem_str):
+                  if not mem_str:
+                      return -1
+                  if mem_str.endswith("Mi"):
+                      return int(mem_str[:-2])
+                  if mem_str.endswith("Gi"):
+                      return int(float(mem_str[:-2]) * 1024)
+                  return -1
+
+              if cpu_m(cpu) < 6000:
+                  raise SystemExit("services.resources.requests.cpu must be >= 6000m for recommended servicepool profile")
+              if mem_mi(mem) < 28000:
+                  raise SystemExit("services.resources.requests.memory must be >= 28000Mi for recommended servicepool profile")
+
+              redis = values.get("redis") or {}
+              if not bool(redis.get("enabled", True)) and not ((redis.get("external") or {}).get("host")):
+                  raise SystemExit("services.enabled=true with redis.enabled=false requires redis.external.host")
+
+              nats = values.get("nats") or {}
+              if not bool(nats.get("enabled", True)) and not ((nats.get("server") or {}).get("url")):
+                  raise SystemExit("services.enabled=true with nats.enabled=false requires nats.server.url")
+          PY
+
+      - name: Fail on unresolved placeholders
+        if: ${{ inputs.fail_on_placeholders && steps.parse_values.outputs.has_placeholders == 'true' }}
+        run: |
+          set -euo pipefail
+          echo "Values file still contains <PLACEHOLDER> tokens."
+          echo "Lines: ${{ steps.parse_values.outputs.placeholder_lines }}"
+          exit 1
+
+      - name: Validate existing Kubernetes Secret
+        if: ${{ steps.parse_values.outputs.secret_create == 'false' && steps.parse_values.outputs.runtime_secrets_source == 'secretKeyRef' }}
+        env:
+          SERVICES_ENABLED: ${{ steps.parse_values.outputs.services_enabled }}
+          SERVICES_SSO_ENABLED: ${{ steps.parse_values.outputs.services_sso_enabled }}
+        run: |
+          set -euo pipefail
+          SECRET_NAME="${{ steps.parse_values.outputs.existing_secret_name }}"
+          if [ -z "$SECRET_NAME" ]; then
+            echo "secrets.create=false but secrets.existingSecretName is empty"
+            exit 1
+          fi
+
+          kubectl -n "$K8S_NAMESPACE" get secret "$SECRET_NAME" >/dev/null
+
+          required_keys=(
+            DB_USER
+            DB_PASSWORD
+            DB_NAME
+            DATABASE_URL
+            TENANT_DB
+            EVAL_API_KEY
+            VLLM_API_KEY
+            FRONTEGG_API_KEY
+            FRONTEGG_DOMAIN
+            FRONTEGG_API_GATEWAY_URL
+            FRONTEGG_WEBHOOK_KEY
+            FRONTEGG_PUBLIC_KEY
+            FRONTEGG_CLIENT_ID
+          )
+
+          if [ "$SERVICES_ENABLED" = "true" ] && [ "$SERVICES_SSO_ENABLED" = "true" ]; then
+            required_keys+=(SSO_CLIENT_SECRET)
+          fi
+
+          missing=0
+          for key in "${required_keys[@]}"; do
+            value="$(kubectl -n "$K8S_NAMESPACE" get secret "$SECRET_NAME" -o "jsonpath={.data.$key}")"
+            if [ -z "$value" ]; then
+              echo "Missing required key in secret '$SECRET_NAME': $key"
+              missing=1
+            fi
+          done
+
+          if [ "$missing" -ne 0 ]; then
+            exit 1
+          fi
+
+      - name: Create image pull secret
+        run: |
+          set -euo pipefail
+
+          if [ -z "${OKAREO_REGISTRY_SERVER:-}" ] || [ -z "${OKAREO_REGISTRY_USERNAME:-}" ] || [ -z "${OKAREO_REGISTRY_PASSWORD:-}" ]; then
+            echo "Missing required registry credentials. Set GitHub secrets: OKAREO_REGISTRY_SERVER, OKAREO_REGISTRY_USERNAME, OKAREO_REGISTRY_PASSWORD"
+            exit 1
+          fi
+
+          REGISTRY_SERVER="$OKAREO_REGISTRY_SERVER"
+          kubectl -n "$K8S_NAMESPACE" create secret docker-registry okareo-registry \
+            --docker-server="$REGISTRY_SERVER" \
+            --docker-username="$OKAREO_REGISTRY_USERNAME" \
+            --docker-password="$OKAREO_REGISTRY_PASSWORD" \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+      - name: Validate configured node pools exist
+        env:
+          NODEPOOL_MAP: ${{ steps.parse_values.outputs.nodepool_map }}
+        run: |
+          set -euo pipefail
+          python - <<'PY' > /tmp/nodepools.tsv
+          import json
+          import os
+
+          raw = os.environ.get("NODEPOOL_MAP", "").strip()
+          if not raw:
+              raise SystemExit(0)
+
+          nodepool_map = json.loads(raw)
+          for component, pool in sorted(nodepool_map.items()):
+              if pool:
+                  print(f"{component}\t{pool}")
+          PY
+
+          if [ -s /tmp/nodepools.tsv ]; then
+            while IFS=$'\t' read -r component pool; do
+              count="$(kubectl get nodes -l "agentpool=$pool" --no-headers 2>/dev/null | wc -l | tr -d ' ')"
+              if [ "$count" = "0" ]; then
+                count="$(kubectl get nodes -l "kubernetes.azure.com/agentpool=$pool" --no-headers 2>/dev/null | wc -l | tr -d ' ')"
+              fi
+              if [ "$count" = "0" ]; then
+                echo "No nodes found for component '$component' with pool '$pool' (checked labels: agentpool and kubernetes.azure.com/agentpool)"
+                exit 1
+              fi
+              echo "Found $count node(s) for component '$component' in pool '$pool'"
+            done < /tmp/nodepools.tsv
+          else
+            echo "No nodeSelector.agentpool set for enabled components; using default scheduler placement."
+          fi
+
+      - name: Deploy external Redis HA and NATS releases
+        if: ${{ inputs.deploy_external_redis_nats && steps.parse_values.outputs.services_enabled == 'true' && (steps.parse_values.outputs.redis_enabled == 'false' || steps.parse_values.outputs.nats_enabled == 'false') }}
+        run: |
+          set -euo pipefail
+
+          helm repo add nats https://nats-io.github.io/k8s/helm/charts/
+          helm repo update
+
+          if [ "${{ steps.parse_values.outputs.redis_enabled }}" = "false" ]; then
+            helm upgrade --install "$REDIS_RELEASE_NAME" "$REDIS_CHART_PATH" \
+              --namespace "$K8S_NAMESPACE" \
+              -f "$REDIS_VALUES_PATH" \
+              --wait \
+              --timeout "$HELM_TIMEOUT"
+          else
+            echo "redis.enabled=true; skipping external Redis HA install"
+          fi
+
+          if [ "${{ steps.parse_values.outputs.nats_enabled }}" = "false" ]; then
+            helm upgrade --install "$NATS_RELEASE_NAME" nats/nats \
+              --namespace "$K8S_NAMESPACE" \
+              -f "$NATS_VALUES_PATH" \
+              --wait \
+              --timeout "$HELM_TIMEOUT"
+          else
+            echo "nats.enabled=true; skipping external NATS install"
+          fi
+
+      - name: Helm deploy (install/upgrade)
+        run: |
+          set -euo pipefail
+          CREATE_NS_FLAG=""
+          if [ "$CREATE_NAMESPACE" = "true" ]; then
+            CREATE_NS_FLAG="--create-namespace"
+          fi
+
+          OVERLAY_ARGS=()
+          if [ -n "${VALUES_OVERLAY_FILE:-}" ]; then
+            OVERLAY_ARGS+=( -f "$VALUES_OVERLAY_FILE" )
+          fi
+
+          helm upgrade --install "$RELEASE_NAME" "$CHART_PATH" \
+            --namespace "$K8S_NAMESPACE" \
+            $CREATE_NS_FLAG \
+            -f "$VALUES_FILE" \
+            "${OVERLAY_ARGS[@]}" \
+            --wait \
+            --timeout "$HELM_TIMEOUT"
+
+      - name: Set public UI/API endpoints
+        if: ${{ inputs.okareo_api_gateway != '' || inputs.okareo_app_domain != '' || steps.parse_values.outputs.values_okareo_api_gateway == '' || steps.parse_values.outputs.values_okareo_app_domain == '' }}
+        env:
+          VALUES_OKAREO_API_GATEWAY: ${{ steps.parse_values.outputs.values_okareo_api_gateway }}
+          VALUES_OKAREO_APP_DOMAIN: ${{ steps.parse_values.outputs.values_okareo_app_domain }}
+          SERVICES_ENABLED: ${{ steps.parse_values.outputs.services_enabled }}
+          FRONTEND_ENABLED: ${{ steps.parse_values.outputs.frontend_enabled }}
+          DB_ENABLED: ${{ steps.parse_values.outputs.db_enabled }}
+        run: |
+          set -euo pipefail
+
+          normalize_url() {
+            local raw="$1"
+            if [ -z "$raw" ]; then
+              printf '%s' ""
+              return 0
+            fi
+            if [[ "$raw" =~ ^https?:// ]]; then
+              printf '%s' "$raw"
+            else
+              printf 'http://%s' "$raw"
+            fi
+          }
+
+          API_URL="$(normalize_url "${OKAREO_API_GATEWAY_OVERRIDE:-${VALUES_OKAREO_API_GATEWAY:-}}")"
+          UI_URL="$(normalize_url "${OKAREO_APP_DOMAIN_OVERRIDE:-${VALUES_OKAREO_APP_DOMAIN:-}}")"
+
+          get_ingress_endpoint() {
+            local ns="${1:-ingress-nginx}"
+            local svc="${2:-ingress-nginx-controller}"
+
+            for _ in $(seq 1 60); do
+              ip="$(kubectl -n "$ns" get svc "$svc" -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || true)"
+              host="$(kubectl -n "$ns" get svc "$svc" -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || true)"
+              if [ -n "$ip" ]; then
+                printf '%s' "$ip"
+                return 0
+              fi
+              if [ -n "$host" ]; then
+                printf '%s' "$host"
+                return 0
+              fi
+              sleep 5
+            done
+            return 1
+          }
+
+          get_lb_endpoint() {
+            local svc_name="$1"
+            local ns="$2"
+
+            for _ in $(seq 1 60); do
+              ip="$(kubectl -n "$ns" get svc "$svc_name" -o jsonpath='{.status.loadBalancer.ingress[0].ip}')"
+              host="$(kubectl -n "$ns" get svc "$svc_name" -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')"
+              if [ -n "$ip" ]; then
+                printf '%s' "$ip"
+                return 0
+              fi
+              if [ -n "$host" ]; then
+                printf '%s' "$host"
+                return 0
+              fi
+              sleep 5
+            done
+            return 1
+          }
+
+          if [ -z "$API_URL" ]; then
+            if [ "$SERVICES_ENABLED" = "true" ]; then
+              if [ "$EXPOSURE_MODE" = "ingress" ]; then
+                INGRESS_EP="$(get_ingress_endpoint)" || {
+                  echo "Failed to resolve ingress-nginx external endpoint"
+                  exit 1
+                }
+                API_URL="https://${INGRESS_EP}"
+              else
+                SERVICES_SVC="$(kubectl -n "$K8S_NAMESPACE" get svc -l app.kubernetes.io/instance="$RELEASE_NAME",app.kubernetes.io/component=services -o jsonpath='{.items[0].metadata.name}')"
+                if [ -z "$SERVICES_SVC" ]; then
+                  echo "Could not locate services Service by labels for API URL auto-detection."
+                  exit 1
+                fi
+                SERVICES_EP="$(get_lb_endpoint "$SERVICES_SVC" "$K8S_NAMESPACE")" || {
+                  echo "Failed to resolve external endpoint for $SERVICES_SVC"
+                  exit 1
+                }
+                SERVICES_PORT="$(kubectl -n "$K8S_NAMESPACE" get svc "$SERVICES_SVC" -o jsonpath='{.spec.ports[0].port}')"
+                API_URL="http://${SERVICES_EP}:${SERVICES_PORT}"
+              fi
+            else
+              echo "services.enabled=false and API override/value is empty; leaving config.okareoApiGateway unchanged."
+            fi
+          fi
+
+          if [ "$DB_ENABLED" = "true" ] && [ -n "$API_URL" ]; then
+            echo "db.enabled=true and API URL is set; this typically implies managed DB path."
+            echo "Keep db.enabled=false for managed Postgres and only use db.enabled=true for in-cluster fallback."
+          fi
+
+          if [ -z "$UI_URL" ]; then
+            if [ "$FRONTEND_ENABLED" = "true" ]; then
+              if [ "$EXPOSURE_MODE" = "ingress" ]; then
+                INGRESS_EP="${INGRESS_EP:-}"
+                if [ -z "$INGRESS_EP" ]; then
+                  INGRESS_EP="$(get_ingress_endpoint)" || {
+                    echo "Failed to resolve ingress-nginx external endpoint"
+                    exit 1
+                  }
+                fi
+                UI_URL="https://${INGRESS_EP}"
+              else
+                FRONTEND_SVC="$(kubectl -n "$K8S_NAMESPACE" get svc -l app.kubernetes.io/instance="$RELEASE_NAME",app.kubernetes.io/component=frontend -o jsonpath='{.items[0].metadata.name}')"
+                if [ -z "$FRONTEND_SVC" ]; then
+                  echo "Could not locate frontend Service by labels for UI URL auto-detection."
+                  exit 1
+                fi
+                FRONTEND_EP="$(get_lb_endpoint "$FRONTEND_SVC" "$K8S_NAMESPACE")" || {
+                  echo "Failed to resolve external endpoint for $FRONTEND_SVC"
+                  exit 1
+                }
+                FRONTEND_PORT="$(kubectl -n "$K8S_NAMESPACE" get svc "$FRONTEND_SVC" -o jsonpath='{.spec.ports[0].port}')"
+                UI_URL="http://${FRONTEND_EP}:${FRONTEND_PORT}"
+              fi
+            else
+              echo "frontend.enabled=false and UI override/value is empty; leaving config.okareoAppDomain unchanged."
+            fi
+          fi
+
+          echo "Using API URL: ${API_URL:-<unchanged>}"
+          echo "Using UI URL:  ${UI_URL:-<unchanged>}"
+
+          CREATE_NS_FLAG=""
+          if [ "$CREATE_NAMESPACE" = "true" ]; then
+            CREATE_NS_FLAG="--create-namespace"
+          fi
+
+          OVERLAY_ARGS=()
+          if [ -n "${VALUES_OVERLAY_FILE:-}" ]; then
+            OVERLAY_ARGS+=( -f "$VALUES_OVERLAY_FILE" )
+          fi
+
+          HELM_SET_ARGS=()
+          if [ -n "$API_URL" ]; then
+            HELM_SET_ARGS+=(--set-string "config.okareoApiGateway=$API_URL")
+          fi
+          if [ -n "$UI_URL" ]; then
+            HELM_SET_ARGS+=(--set-string "config.okareoAppDomain=$UI_URL")
+          fi
+
+          helm upgrade --install "$RELEASE_NAME" "$CHART_PATH" \
+            --namespace "$K8S_NAMESPACE" \
+            $CREATE_NS_FLAG \
+            -f "$VALUES_FILE" \
+            "${OVERLAY_ARGS[@]}" \
+            "${HELM_SET_ARGS[@]}" \
+            --wait \
+            --timeout "$HELM_TIMEOUT"
+
+          FRONTEND_DEPLOYMENTS="$(kubectl -n "$K8S_NAMESPACE" get deployment -l app.kubernetes.io/instance="$RELEASE_NAME",app.kubernetes.io/component=frontend -o name)"
+          if [ -n "$FRONTEND_DEPLOYMENTS" ]; then
+            kubectl -n "$K8S_NAMESPACE" rollout restart deployment -l app.kubernetes.io/instance="$RELEASE_NAME",app.kubernetes.io/component=frontend
+            kubectl -n "$K8S_NAMESPACE" rollout status deployment -l app.kubernetes.io/instance="$RELEASE_NAME",app.kubernetes.io/component=frontend --timeout="$HELM_TIMEOUT"
+          else
+            echo "No frontend deployment found for release; skipping frontend rollout restart."
+          fi
+
+          SERVICES_DEPLOYMENTS="$(kubectl -n "$K8S_NAMESPACE" get deployment -l app.kubernetes.io/instance="$RELEASE_NAME",app.kubernetes.io/component=services -o name)"
+          if [ -n "$SERVICES_DEPLOYMENTS" ]; then
+            kubectl -n "$K8S_NAMESPACE" rollout restart deployment -l app.kubernetes.io/instance="$RELEASE_NAME",app.kubernetes.io/component=services
+            kubectl -n "$K8S_NAMESPACE" rollout status deployment -l app.kubernetes.io/instance="$RELEASE_NAME",app.kubernetes.io/component=services --timeout="$HELM_TIMEOUT"
+          else
+            echo "No services deployment found for release; skipping services rollout restart."
+          fi
+
+      - name: Configure ingress-nginx TCP forwarding for NATS
+        if: ${{ inputs.exposure_mode == 'ingress' && steps.parse_values.outputs.services_enabled == 'true' && steps.parse_values.outputs.values_nats_external_enabled == 'true' }}
+        env:
+          NATS_ENABLED: ${{ steps.parse_values.outputs.nats_enabled }}
+        run: |
+          set -euo pipefail
+
+          INGRESS_NS="ingress-nginx"
+          CONTROLLER_DEPLOY="ingress-nginx-controller"
+          CONTROLLER_SVC="ingress-nginx-controller"
+          TCP_CFGMAP="ingress-nginx-tcp-services"
+
+          kubectl -n "$INGRESS_NS" get deployment "$CONTROLLER_DEPLOY" >/dev/null
+          kubectl -n "$INGRESS_NS" get service "$CONTROLLER_SVC" >/dev/null
+
+          if [ "$NATS_ENABLED" = "true" ]; then
+            NATS_BACKEND_SVC="$(kubectl -n "$K8S_NAMESPACE" get svc -l app.kubernetes.io/instance="$RELEASE_NAME",app.kubernetes.io/component=nats -o jsonpath='{.items[0].metadata.name}')"
+          else
+            NATS_BACKEND_SVC="$(python -c 'import json, os, subprocess; ns=os.environ["K8S_NAMESPACE"]; release=os.environ["NATS_RELEASE_NAME"]; data=json.loads(subprocess.check_output(["kubectl", "-n", ns, "get", "svc", "-o", "json"], text=True)); matches=sorted([item.get("metadata", {}).get("name", "") for item in data.get("items", []) if item.get("metadata", {}).get("labels", {}).get("app.kubernetes.io/instance") == release and any(int(port.get("port", 0)) == 4222 for port in item.get("spec", {}).get("ports", [])) and item.get("metadata", {}).get("name", "")]); print(matches[0] if matches else "")')"
+          fi
+
+          if [ -z "${NATS_BACKEND_SVC:-}" ]; then
+            echo "Could not resolve NATS backend service for ingress TCP mapping"
+            exit 1
+          fi
+
+          if ! kubectl -n "$INGRESS_NS" get configmap "$TCP_CFGMAP" >/dev/null 2>&1; then
+            kubectl -n "$INGRESS_NS" create configmap "$TCP_CFGMAP"
+          fi
+
+          kubectl -n "$INGRESS_NS" patch configmap "$TCP_CFGMAP" --type merge \
+            -p "{\"data\":{\"4222\":\"$K8S_NAMESPACE/$NATS_BACKEND_SVC:4222\"}}"
+
+          TCP_ARG="--tcp-services-configmap=${INGRESS_NS}/${TCP_CFGMAP}"
+          if ! kubectl -n "$INGRESS_NS" get deployment "$CONTROLLER_DEPLOY" -o jsonpath='{.spec.template.spec.containers[0].args}' | grep -F -- "$TCP_ARG" >/dev/null; then
+            kubectl -n "$INGRESS_NS" patch deployment "$CONTROLLER_DEPLOY" --type json \
+              -p "[{\"op\":\"add\",\"path\":\"/spec/template/spec/containers/0/args/-\",\"value\":\"$TCP_ARG\"}]"
+            kubectl -n "$INGRESS_NS" rollout status deployment "$CONTROLLER_DEPLOY" --timeout "$HELM_TIMEOUT"
+          fi
+
+          if ! kubectl -n "$INGRESS_NS" get service "$CONTROLLER_SVC" -o jsonpath='{range .spec.ports[*]}{.port}{" "}{end}' | grep -Eq '(^| )4222( |$)'; then
+            kubectl -n "$INGRESS_NS" patch service "$CONTROLLER_SVC" --type json \
+              -p '[{"op":"add","path":"/spec/ports/-","value":{"name":"nats-4222","port":4222,"protocol":"TCP","targetPort":4222}}]'
+          fi
+
+          echo "Configured ingress-nginx TCP 4222 mapping to $K8S_NAMESPACE/$NATS_BACKEND_SVC"
+
+      - name: Deployment summary
+        run: |
+          set -euo pipefail
+          kubectl -n "$K8S_NAMESPACE" get pods -o wide
+          kubectl -n "$K8S_NAMESPACE" get svc
+
+      - name: API health check
+        run: |
+          set -euo pipefail
+
+          get_ingress_endpoint() {
+            local ns="${1:-ingress-nginx}"
+            local svc="${2:-ingress-nginx-controller}"
+
+            for _ in $(seq 1 60); do
+              ip="$(kubectl -n "$ns" get svc "$svc" -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || true)"
+              host="$(kubectl -n "$ns" get svc "$svc" -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || true)"
+              if [ -n "$ip" ]; then
+                printf '%s' "$ip"
+                return 0
+              fi
+              if [ -n "$host" ]; then
+                printf '%s' "$host"
+                return 0
+              fi
+              sleep 5
+            done
+            return 1
+          }
+
+          if [ "$EXPOSURE_MODE" = "ingress" ]; then
+            endpoint="$(get_ingress_endpoint)" || {
+              echo "No ingress endpoint available for health check; skipping"
+              exit 0
+            }
+            url="https://${endpoint}/v0/health"
+            attempts=24
+            sleep_seconds=5
+
+            for i in $(seq 1 "$attempts"); do
+              if curl -k -fsS --max-time 10 -X POST "$url"; then
+                echo "API health check passed on attempt ${i}/${attempts}"
+                exit 0
+              fi
+
+              if [ "$i" -lt "$attempts" ]; then
+                echo "API health check attempt ${i}/${attempts} failed; retrying in ${sleep_seconds}s"
+                sleep "$sleep_seconds"
+              fi
+            done
+
+            echo "API health check failed after ${attempts} attempts: $url"
+            exit 1
+          fi
+
+          SERVICES_SVCS="$(kubectl -n "$K8S_NAMESPACE" get svc -l app.kubernetes.io/instance="$RELEASE_NAME",app.kubernetes.io/component=services -o jsonpath='{.items[*].metadata.name}')"
+          SERVICES_SVC="${SERVICES_SVCS%% *}"
+          if [ -z "$SERVICES_SVC" ]; then
+            echo "No services service found; skipping health check"
+            exit 0
+          fi
+
+          ip="$(kubectl -n "$K8S_NAMESPACE" get svc "$SERVICES_SVC" -o jsonpath='{.status.loadBalancer.ingress[0].ip}')"
+          host="$(kubectl -n "$K8S_NAMESPACE" get svc "$SERVICES_SVC" -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')"
+          port="$(kubectl -n "$K8S_NAMESPACE" get svc "$SERVICES_SVC" -o jsonpath='{.spec.ports[0].port}')"
+
+          endpoint="$ip"
+          if [ -z "$endpoint" ]; then
+            endpoint="$host"
+          fi
+
+          if [ -z "$endpoint" ]; then
+            echo "No external endpoint available for health check; skipping"
+            exit 0
+          fi
+
+          url="http://${endpoint}:${port}/v0/health"
+          attempts=24
+          sleep_seconds=5
+
+          for i in $(seq 1 "$attempts"); do
+            if curl -fsS --max-time 10 -X POST "$url"; then
+              echo "API health check passed on attempt ${i}/${attempts}"
+              exit 0
+            fi
+
+            if [ "$i" -lt "$attempts" ]; then
+              echo "API health check attempt ${i}/${attempts} failed; retrying in ${sleep_seconds}s"
+              sleep "$sleep_seconds"
+            fi
+          done
+
+          echo "API health check failed after ${attempts} attempts: $url"
+          kubectl -n "$K8S_NAMESPACE" get svc "$SERVICES_SVC" -o wide || true
+          exit 1

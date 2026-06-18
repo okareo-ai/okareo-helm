@@ -22,6 +22,9 @@ container:
 
 service:
   merge:
+    metadata:
+      annotations:
+        service.beta.kubernetes.io/azure-load-balancer-internal: "true"
     spec:
       type: LoadBalancer
 

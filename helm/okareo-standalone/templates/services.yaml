@@ -37,6 +37,10 @@ metadata:
   labels:
     {{- include "okareo-standalone.labels" . | nindent 4 }}
     app.kubernetes.io/component: services
+  {{- with .Values.services.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
 spec:
   type: {{ .Values.services.service.type }}
   selector:
@@ -69,8 +73,9 @@ spec:
       labels:
         {{- include "okareo-standalone.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: services
-      {{- with .Values.services.podAnnotations }}
       annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+      {{- with .Values.services.podAnnotations }}
         {{- toYaml . | nindent 8 }}
       {{- end }}
     spec:
@@ -200,6 +205,11 @@ spec:
                 secretKeyRef:
                   name: {{ include "okareo-standalone.secretName" . }}
                   key: FRONTEGG_CLIENT_ID
+            - name: OKAREO_JWT_PRIVATE_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "okareo-standalone.secretName" . }}
+                  key: OKAREO_JWT_PRIVATE_KEY
             {{- if $servicesSsoEnabled }}
             - name: SSO_CLIENT_SECRET
               valueFrom:

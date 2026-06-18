@@ -27,9 +27,13 @@ The Kubernetes deployment can be achieved via GitHub Actions or the CLI. Quick s
     - `base64 -i okareo-values.yaml | tr -d '\n' | gh variable set OKAREO_VALUES_YAML_B64 --repo <org>/<repo> --body-file -`
   - Alternative (plain YAML):
     - `gh variable set OKAREO_VALUES_YAML --repo <org>/<repo> --body-file okareo-values.yaml`
+- Kubernetes app secret requirement:
+  - `okareo-app-secrets` must include key `OKAREO_JWT_PRIVATE_KEY` (used by backend services runtime).
 - Cross-cluster frontend overlay is configured before frontend run:
   - Set `crossClusterApi.endpointIP` in `deploy/values/cluster-frontend-hostbased-crosscluster.example.yaml` to the backend services LoadBalancer IP.
   - Set `crossClusterNats.endpointIP` in `deploy/values/cluster-frontend-hostbased-crosscluster.example.yaml` to the backend NATS LoadBalancer IP.
+  - For internal-only semitrusted mode, these must be **private ILB IPs** (not public IPs).
+  - Ensure frontend and backend clusters have private network connectivity (for example VNet peering and NSG rules) so frontend ingress can reach those private IPs on ports `8000` and `4222`.
   - Set ingress hosts/TLS values in that same file for your frontend and API domains.
 
 ## Provider deployment guides

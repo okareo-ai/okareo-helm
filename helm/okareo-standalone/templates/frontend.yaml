@@ -43,6 +43,8 @@ spec:
       labels:
         {{- include "okareo-standalone.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: frontend
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
     spec:
       {{- if .Values.imagePullSecrets }}
       imagePullSecrets:

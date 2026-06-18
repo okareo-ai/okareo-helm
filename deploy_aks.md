@@ -86,6 +86,128 @@ Then edit `deploy/values/cluster-frontend-hostbased-crosscluster.example.yaml` a
 - `<BACKEND_NATS_LB_IP>` with backend NATS LB IP
 - `app.example.com` / `api.example.com` and TLS secret names for your domains
 
+### 2.5) Private network connectivity prerequisite (required for internal-only semitrusted mode)
+
+If backend services/NATS are configured as Azure **internal** LoadBalancers, frontend cluster ingress must be able to reach backend private ILB IPs on ports `8000` and `4222`.
+
+1. Discover AKS-managed VNet identities:
+
+```bash
+FRONTEND_RG="<frontend-aks-resource-group>"
+FRONTEND_AKS="<frontend-aks-cluster-name>"
+BACKEND_RG="<backend-aks-resource-group>"
+BACKEND_AKS="<backend-aks-cluster-name>"
+
+FRONTEND_NODE_RG="$(az aks show -g "$FRONTEND_RG" -n "$FRONTEND_AKS" --query nodeResourceGroup -o tsv)"
+BACKEND_NODE_RG="$(az aks show -g "$BACKEND_RG" -n "$BACKEND_AKS" --query nodeResourceGroup -o tsv)"
+
+FRONTEND_VNET_ID="$(az network vnet list -g "$FRONTEND_NODE_RG" --query '[0].id' -o tsv)"
+BACKEND_VNET_ID="$(az network vnet list -g "$BACKEND_NODE_RG" --query '[0].id' -o tsv)"
+
+FRONTEND_VNET_CIDR="$(az network vnet show --ids "$FRONTEND_VNET_ID" --query 'addressSpace.addressPrefixes[0]' -o tsv)"
+BACKEND_VNET_CIDR="$(az network vnet show --ids "$BACKEND_VNET_ID" --query 'addressSpace.addressPrefixes[0]' -o tsv)"
+
+printf "frontend node RG: %s\nbackend node RG: %s\n" "$FRONTEND_NODE_RG" "$BACKEND_NODE_RG"
+printf "frontend vnet: %s (%s)\nbackend vnet: %s (%s)\n" "$FRONTEND_VNET_ID" "$FRONTEND_VNET_CIDR" "$BACKEND_VNET_ID" "$BACKEND_VNET_CIDR"
+```
+
+2. Ensure address spaces **do not overlap** before peering:
+
+```bash
+python3 - <<'PY'
+import ipaddress, os, sys
+f = ipaddress.ip_network(os.environ['FRONTEND_VNET_CIDR'])
+b = ipaddress.ip_network(os.environ['BACKEND_VNET_CIDR'])
+print(f"frontend={f} backend={b}")
+if f.overlaps(b):
+    print("ERROR: VNet CIDRs overlap; VNet peering for private routing will not work.")
+    sys.exit(1)
+print("OK: non-overlapping CIDRs")
+PY
+```
+
+3. Create bidirectional VNet peering:
+
+```bash
+FRONTEND_VNET_NAME="$(az network vnet show --ids "$FRONTEND_VNET_ID" --query name -o tsv)"
+BACKEND_VNET_NAME="$(az network vnet show --ids "$BACKEND_VNET_ID" --query name -o tsv)"
+
+az network vnet peering create \
+  --resource-group "$FRONTEND_NODE_RG" \
+  --vnet-name "$FRONTEND_VNET_NAME" \
+  --name "to-${BACKEND_AKS}" \
+  --remote-vnet "$BACKEND_VNET_ID" \
+  --allow-vnet-access \
+  --allow-forwarded-traffic
+
+az network vnet peering create \
+  --resource-group "$BACKEND_NODE_RG" \
+  --vnet-name "$BACKEND_VNET_NAME" \
+  --name "to-${FRONTEND_AKS}" \
+  --remote-vnet "$FRONTEND_VNET_ID" \
+  --allow-vnet-access \
+  --allow-forwarded-traffic
+```
+
+4. Verify peering status is `Connected`:
+
+```bash
+az network vnet peering list -g "$FRONTEND_NODE_RG" --vnet-name "$FRONTEND_VNET_NAME" -o table
+az network vnet peering list -g "$BACKEND_NODE_RG" --vnet-name "$BACKEND_VNET_NAME" -o table
+```
+
+5. If required by NSG policy, allow frontend subnet to backend ILB ports (`8000`,`4222`):
+
+```bash
+FRONTEND_SUBNET_ID="$(az network vnet subnet list -g "$FRONTEND_NODE_RG" --vnet-name "$FRONTEND_VNET_NAME" --query '[0].id' -o tsv)"
+BACKEND_SUBNET_ID="$(az network vnet subnet list -g "$BACKEND_NODE_RG" --vnet-name "$BACKEND_VNET_NAME" --query '[0].id' -o tsv)"
+
+FRONTEND_SUBNET_PREFIX="$(az network vnet subnet show --ids "$FRONTEND_SUBNET_ID" --query addressPrefix -o tsv)"
+BACKEND_SUBNET_NSG_ID="$(az network vnet subnet show --ids "$BACKEND_SUBNET_ID" --query networkSecurityGroup.id -o tsv)"
+
+BACKEND_SUBNET_NSG_NAME="$(basename "$BACKEND_SUBNET_NSG_ID")"
+
+az network nsg rule create \
+  --resource-group "$BACKEND_NODE_RG" \
+  --nsg-name "$BACKEND_SUBNET_NSG_NAME" \
+  --name AllowFrontendToBackendServices8000 \
+  --priority 300 \
+  --direction Inbound \
+  --access Allow \
+  --protocol Tcp \
+  --source-address-prefixes "$FRONTEND_SUBNET_PREFIX" \
+  --destination-port-ranges 8000
+
+az network nsg rule create \
+  --resource-group "$BACKEND_NODE_RG" \
+  --nsg-name "$BACKEND_SUBNET_NSG_NAME" \
+  --name AllowFrontendToBackendNats4222 \
+  --priority 301 \
+  --direction Inbound \
+  --access Allow \
+  --protocol Tcp \
+  --source-address-prefixes "$FRONTEND_SUBNET_PREFIX" \
+  --destination-port-ranges 4222
+```
+
+6. Validate private reachability from frontend cluster (after backend ILBs exist):
+
+```bash
+BACKEND_SERVICES_PRIVATE_ILB_IP="<BACKEND_SERVICES_PRIVATE_ILB_IP>"
+BACKEND_NATS_PRIVATE_ILB_IP="<BACKEND_NATS_PRIVATE_ILB_IP>"
+
+kubectl --context <frontend-kube-context> -n okareo run netcheck-http --image=curlimages/curl:8.8.0 --rm -it --restart=Never -- \
+  sh -c "curl -m 10 -sS -o /dev/null -w 'services:%{http_code} %{time_total}\\n' http://${BACKEND_SERVICES_PRIVATE_ILB_IP}:8000/v0/health"
+
+kubectl --context <frontend-kube-context> -n okareo run netcheck-nats --image=nicolaka/netshoot:latest --rm -it --restart=Never -- \
+  sh -c "nc -vz -w 5 ${BACKEND_NATS_PRIVATE_ILB_IP} 4222"
+```
+
+For internal-only semitrusted mode:
+
+- Use backend **private ILB IPs** for `<BACKEND_SERVICES_LB_IP>` and `<BACKEND_NATS_LB_IP>`.
+- Confirm frontend cluster can route to backend private ILB IPs on `8000` and `4222` (VNet peering + NSG rules).
+
 3) Install external dependencies (Redis + NATS) in backend cluster
 
 ```bash
@@ -130,6 +252,8 @@ kubectl -n "$NS" get svc \
 ```
 
 If `EXTERNAL-IP` is `<pending>`, wait and retry.
+
+For internal-only semitrusted mode on AKS, `EXTERNAL-IP` will be a private IP from your VNet (ILB).
 
 6) Update cross-cluster frontend overlay with these IPs
 

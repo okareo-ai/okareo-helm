@@ -1,14 +1,20 @@
 # Backend cluster overlay: services only from Okareo chart.
 # Deploy Redis HA and NATS as separate Helm releases.
+# IMPORTANT: Before deploying, replace nats.external.url with your reachable
+# NATS endpoint (for example a DNS name or IP exposed via ingress TCP 4222).
 
 frontend:
   enabled: false
 
 services:
   enabled: true
-  replicaCount: 4
+  runtimeSecrets:
+    source: secretKeyRef
+  replicaCount: 2
   service:
     type: LoadBalancer
+    annotations:
+      service.beta.kubernetes.io/azure-load-balancer-internal: "true"
   nodeSelector:
     agentpool: servicepool
   tolerations:
@@ -18,11 +24,13 @@ services:
       effect: NoSchedule
   affinity:
     podAntiAffinity:
-      requiredDuringSchedulingIgnoredDuringExecution:
-        - topologyKey: kubernetes.io/hostname
-          labelSelector:
-            matchLabels:
-              app.kubernetes.io/component: services
+      preferredDuringSchedulingIgnoredDuringExecution:
+        - weight: 100
+          podAffinityTerm:
+            topologyKey: kubernetes.io/hostname
+            labelSelector:
+              matchLabels:
+                app.kubernetes.io/component: services
   resources:
     requests:
       cpu: 6000m
@@ -41,7 +49,8 @@ nats:
   enabled: false
   external:
     enabled: true
-    url: ""
+    # Replace with your own NATS endpoint before deploy.
+    url: "nats://<NATS_EXTERNAL_IP_OR_DNS>:4222"
   server:
     url: nats://okareo-nats:4222
 
