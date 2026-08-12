@@ -6,11 +6,11 @@ imagePullSecrets: []
 images:
   frontend:
     repository: okareoartifacts/appfront
-    tag: v0.0.22
+    tag: v0.0.24
     pullPolicy: IfNotPresent
   services:
     repository: okareoartifacts/appservices
-    tag: v0.0.27
+    tag: v0.0.29
     pullPolicy: IfNotPresent
   db:
     repository: postgres
@@ -294,12 +294,7 @@ secrets:
   tenantDb: ""
   evalApiKey: ""
   vllmApiKey: sk-none
-  fronteggApiKey: ""
-  fronteggDomain: ""
-  fronteggApiGatewayUrl: ""
-  fronteggWebhookKey: ""
-  fronteggPublicKey: ""
-  fronteggClientId: ""
+  okareoJwtPrivateKey: ""
   ssoClientSecret: ""
 
 config:
@@ -308,6 +303,7 @@ config:
   evalModelName: azure/<your-evaluator-deployment-name>
   embeddingModelName: azure/<your-embedding-deployment-name>
   airgapOnly: "TRUE"
+  standaloneAuthMode: "airgap"
   taskListenerEnabled: "true"
   traceThreadPoolSize: "4"
   disableTelemetry: true

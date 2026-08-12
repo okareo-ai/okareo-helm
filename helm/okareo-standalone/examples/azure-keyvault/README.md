@@ -15,12 +15,7 @@ Use any naming convention you want. The helper script in this folder defaults to
 - `tenant-db`
 - `eval-api-key`
 - `vllm-api-key`
-- `frontegg-api-key`
-- `frontegg-domain`
-- `frontegg-api-gateway-url`
-- `frontegg-webhook-key`
-- `frontegg-public-key`
-- `frontegg-client-id`
+- `okareo-jwt-private-key`
 
 Example creation commands:
 
@@ -34,12 +29,7 @@ az keyvault secret set --vault-name "$KEYVAULT_NAME" --name database-url --value
 az keyvault secret set --vault-name "$KEYVAULT_NAME" --name tenant-db --value "postgresql+psycopg2://<DB_USER>:<DB_PASSWORD>@<DB_HOST>:5432/<DB_NAME>?sslmode=require"
 az keyvault secret set --vault-name "$KEYVAULT_NAME" --name eval-api-key --value "<EVAL_API_KEY>"
 az keyvault secret set --vault-name "$KEYVAULT_NAME" --name vllm-api-key --value "sk-none"
-az keyvault secret set --vault-name "$KEYVAULT_NAME" --name frontegg-api-key --value "<FRONTEGG_API_KEY>"
-az keyvault secret set --vault-name "$KEYVAULT_NAME" --name frontegg-domain --value "<FRONTEGG_DOMAIN>"
-az keyvault secret set --vault-name "$KEYVAULT_NAME" --name frontegg-api-gateway-url --value "<FRONTEGG_API_GATEWAY_URL>"
-az keyvault secret set --vault-name "$KEYVAULT_NAME" --name frontegg-webhook-key --value "<FRONTEGG_WEBHOOK_KEY>"
-az keyvault secret set --vault-name "$KEYVAULT_NAME" --name frontegg-public-key --value "<FRONTEGG_PUBLIC_KEY_BASE64>"
-az keyvault secret set --vault-name "$KEYVAULT_NAME" --name frontegg-client-id --value "<FRONTEGG_CLIENT_ID>"
+az keyvault secret set --vault-name "$KEYVAULT_NAME" --name okareo-jwt-private-key --value "$(openssl genrsa 2048 | openssl base64 -A)"
 ```
 
 ## 2) Sync Key Vault values into a Kubernetes Secret
@@ -58,7 +48,7 @@ export K8S_SECRET_NAME="okareo-app-secrets"
 bash helm/okareo-standalone/examples/azure-keyvault/sync_keyvault_to_k8s_secret.sh
 ```
 
-If your Key Vault secret names differ, override them with environment variables before running the script (for example `KV_DB_USER`, `KV_DATABASE_URL`, `KV_FRONTEGG_API_KEY`).
+If your Key Vault secret names differ, override them with environment variables before running the script (for example `KV_DB_USER`, `KV_DATABASE_URL`, `KV_EVAL_API_KEY`).
 
 ## 3) Point Helm at the existing Kubernetes Secret
 

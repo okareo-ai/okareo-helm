@@ -11,6 +11,7 @@ data:
   EVAL_MODEL_NAME: {{ .Values.config.evalModelName | quote }}
   EMBEDDING_MODEL_NAME: {{ .Values.config.embeddingModelName | quote }}
   AIRGAP_ONLY: {{ .Values.config.airgapOnly | quote }}
+  OKAREO_STANDALONE_AUTH_MODE: {{ .Values.config.standaloneAuthMode | quote }}
   DISABLE_TELEMETRY: {{ ternary "1" "" .Values.config.disableTelemetry | quote }}
   TASK_LISTENER_ENABLED: {{ .Values.config.taskListenerEnabled | quote }}
   TRACE_THREAD_POOL_SIZE: {{ .Values.config.traceThreadPoolSize | quote }}

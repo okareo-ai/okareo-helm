@@ -18,16 +18,22 @@
 {{- fail "customCa.enabled=true requires customCa.secretName to be set" -}}
 {{- end -}}
 {{- $waitForFileSeconds := int (default 300 .Values.services.runtimeSecrets.waitForFileSeconds) -}}
-{{- $servicesSsoEnabled := false -}}
 {{- $proxyEnabledForServices := and .Values.proxy.enabled .Values.proxy.components.services -}}
 {{- $customCaEnabled := and .Values.customCa.enabled .Values.customCa.secretName -}}
+{{- $servicesAuthMode := .Values.config.standaloneAuthMode -}}
+{{- $authModeInExtraEnv := false -}}
 {{- range .Values.services.extraEnv -}}
-{{- if and (kindIs "map" .) (eq (default "" .name) "OKAREO_STANDALONE_AUTH_MODE") (eq (lower (toString (default "" .value))) "sso") -}}
-{{- $servicesSsoEnabled = true -}}
+{{- if and (kindIs "map" .) (eq (default "" .name) "OKAREO_STANDALONE_AUTH_MODE") -}}
+{{- $authModeInExtraEnv = true -}}
+{{- $servicesAuthMode = .value -}}
 {{- end -}}
 {{- end -}}
+{{- $servicesSsoEnabled := eq (lower (toString $servicesAuthMode)) "sso" -}}
 {{- if and .Values.services.enabled $servicesSsoEnabled (eq $runtimeSecretsSource "secretKeyRef") .Values.secrets.create (not .Values.secrets.ssoClientSecret) -}}
 {{- fail "secrets.ssoClientSecret must be set when services SSO mode is enabled and secrets.create=true" -}}
+{{- end -}}
+{{- if and .Values.services.enabled (eq $runtimeSecretsSource "secretKeyRef") .Values.secrets.create (ne (lower (toString $servicesAuthMode)) "cloud") (not .Values.secrets.okareoJwtPrivateKey) -}}
+{{- fail "secrets.okareoJwtPrivateKey must be set when secrets.create=true (standalone JWT signing key). Generate with: openssl genrsa 2048 | openssl base64 -A. Or supply the key via secrets.existingSecretName / services.runtimeSecrets.source=envFile." -}}
 {{- end -}}
 {{- if .Values.services.enabled }}
 apiVersion: v1
@@ -175,36 +181,6 @@ spec:
                 secretKeyRef:
                   name: {{ include "okareo-standalone.secretName" . }}
                   key: VLLM_API_KEY
-            - name: FRONTEGG_API_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: {{ include "okareo-standalone.secretName" . }}
-                  key: FRONTEGG_API_KEY
-            - name: FRONTEGG_DOMAIN
-              valueFrom:
-                secretKeyRef:
-                  name: {{ include "okareo-standalone.secretName" . }}
-                  key: FRONTEGG_DOMAIN
-            - name: FRONTEGG_API_GATEWAY_URL
-              valueFrom:
-                secretKeyRef:
-                  name: {{ include "okareo-standalone.secretName" . }}
-                  key: FRONTEGG_API_GATEWAY_URL
-            - name: FRONTEGG_WEBHOOK_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: {{ include "okareo-standalone.secretName" . }}
-                  key: FRONTEGG_WEBHOOK_KEY
-            - name: FRONTEGG_PUBLIC_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: {{ include "okareo-standalone.secretName" . }}
-                  key: FRONTEGG_PUBLIC_KEY
-            - name: FRONTEGG_CLIENT_ID
-              valueFrom:
-                secretKeyRef:
-                  name: {{ include "okareo-standalone.secretName" . }}
-                  key: FRONTEGG_CLIENT_ID
             - name: OKAREO_JWT_PRIVATE_KEY
               valueFrom:
                 secretKeyRef:
@@ -223,6 +199,13 @@ spec:
                 configMapKeyRef:
                   name: {{ include "okareo-standalone.fullname" . }}-config
                   key: SERVICES_TENANTS_JSON
+            {{- if not $authModeInExtraEnv }}
+            - name: OKAREO_STANDALONE_AUTH_MODE
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "okareo-standalone.fullname" . }}-config
+                  key: OKAREO_STANDALONE_AUTH_MODE
+            {{- end }}
             - name: REDISHOST
               value: {{ include "okareo-standalone.redisHost" . | quote }}
             - name: REDISPORT

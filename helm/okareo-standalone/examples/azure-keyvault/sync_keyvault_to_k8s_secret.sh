@@ -17,12 +17,7 @@ KV_DATABASE_URL="${KV_DATABASE_URL:-database-url}"
 KV_TENANT_DB="${KV_TENANT_DB:-tenant-db}"
 KV_EVAL_API_KEY="${KV_EVAL_API_KEY:-eval-api-key}"
 KV_VLLM_API_KEY="${KV_VLLM_API_KEY:-vllm-api-key}"
-KV_FRONTEGG_API_KEY="${KV_FRONTEGG_API_KEY:-frontegg-api-key}"
-KV_FRONTEGG_DOMAIN="${KV_FRONTEGG_DOMAIN:-frontegg-domain}"
-KV_FRONTEGG_API_GATEWAY_URL="${KV_FRONTEGG_API_GATEWAY_URL:-frontegg-api-gateway-url}"
-KV_FRONTEGG_WEBHOOK_KEY="${KV_FRONTEGG_WEBHOOK_KEY:-frontegg-webhook-key}"
-KV_FRONTEGG_PUBLIC_KEY="${KV_FRONTEGG_PUBLIC_KEY:-frontegg-public-key}"
-KV_FRONTEGG_CLIENT_ID="${KV_FRONTEGG_CLIENT_ID:-frontegg-client-id}"
+KV_OKAREO_JWT_PRIVATE_KEY="${KV_OKAREO_JWT_PRIVATE_KEY:-okareo-jwt-private-key}"
 
 fetch_kv_secret() {
   local keyvault_secret_name="$1"
@@ -42,12 +37,7 @@ DATABASE_URL="$(fetch_kv_secret "$KV_DATABASE_URL")"
 TENANT_DB="$(fetch_kv_secret "$KV_TENANT_DB")"
 EVAL_API_KEY="$(fetch_kv_secret "$KV_EVAL_API_KEY")"
 VLLM_API_KEY="$(fetch_kv_secret "$KV_VLLM_API_KEY")"
-FRONTEGG_API_KEY="$(fetch_kv_secret "$KV_FRONTEGG_API_KEY")"
-FRONTEGG_DOMAIN="$(fetch_kv_secret "$KV_FRONTEGG_DOMAIN")"
-FRONTEGG_API_GATEWAY_URL="$(fetch_kv_secret "$KV_FRONTEGG_API_GATEWAY_URL")"
-FRONTEGG_WEBHOOK_KEY="$(fetch_kv_secret "$KV_FRONTEGG_WEBHOOK_KEY")"
-FRONTEGG_PUBLIC_KEY="$(fetch_kv_secret "$KV_FRONTEGG_PUBLIC_KEY")"
-FRONTEGG_CLIENT_ID="$(fetch_kv_secret "$KV_FRONTEGG_CLIENT_ID")"
+OKAREO_JWT_PRIVATE_KEY="$(fetch_kv_secret "$KV_OKAREO_JWT_PRIVATE_KEY")"
 
 echo "Upserting Kubernetes Secret '$K8S_SECRET_NAME' in namespace '$AKS_NAMESPACE'..."
 
@@ -59,12 +49,7 @@ kubectl -n "$AKS_NAMESPACE" create secret generic "$K8S_SECRET_NAME" \
   --from-literal=TENANT_DB="$TENANT_DB" \
   --from-literal=EVAL_API_KEY="$EVAL_API_KEY" \
   --from-literal=VLLM_API_KEY="$VLLM_API_KEY" \
-  --from-literal=FRONTEGG_API_KEY="$FRONTEGG_API_KEY" \
-  --from-literal=FRONTEGG_DOMAIN="$FRONTEGG_DOMAIN" \
-  --from-literal=FRONTEGG_API_GATEWAY_URL="$FRONTEGG_API_GATEWAY_URL" \
-  --from-literal=FRONTEGG_WEBHOOK_KEY="$FRONTEGG_WEBHOOK_KEY" \
-  --from-literal=FRONTEGG_PUBLIC_KEY="$FRONTEGG_PUBLIC_KEY" \
-  --from-literal=FRONTEGG_CLIENT_ID="$FRONTEGG_CLIENT_ID" \
+  --from-literal=OKAREO_JWT_PRIVATE_KEY="$OKAREO_JWT_PRIVATE_KEY" \
   --dry-run=client -o yaml | kubectl apply -f -
 
 echo "Done. Secret '$K8S_SECRET_NAME' is ready for Helm existingSecretName."

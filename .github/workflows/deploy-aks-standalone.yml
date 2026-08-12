@@ -527,12 +527,7 @@ jobs:
             TENANT_DB
             EVAL_API_KEY
             VLLM_API_KEY
-            FRONTEGG_API_KEY
-            FRONTEGG_DOMAIN
-            FRONTEGG_API_GATEWAY_URL
-            FRONTEGG_WEBHOOK_KEY
-            FRONTEGG_PUBLIC_KEY
-            FRONTEGG_CLIENT_ID
+            OKAREO_JWT_PRIVATE_KEY
           )
 
           if [ "$SERVICES_ENABLED" = "true" ] && [ "$SERVICES_SSO_ENABLED" = "true" ]; then

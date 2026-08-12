@@ -4,6 +4,12 @@
 {{- end -}}
 {{- $proxyEnabledForFrontend := and .Values.proxy.enabled .Values.proxy.components.frontend -}}
 {{- $customCaEnabled := and .Values.customCa.enabled .Values.customCa.secretName -}}
+{{- $authModeInExtraEnv := false -}}
+{{- range .Values.frontend.extraEnv -}}
+{{- if and (kindIs "map" .) (eq (default "" .name) "OKAREO_STANDALONE_AUTH_MODE") -}}
+{{- $authModeInExtraEnv = true -}}
+{{- end -}}
+{{- end -}}
 apiVersion: v1
 kind: Service
 metadata:
@@ -85,6 +91,13 @@ spec:
                 configMapKeyRef:
                   name: {{ include "okareo-standalone.fullname" . }}-config
                   key: OKAREO_APP_DOMAIN
+            {{- if not $authModeInExtraEnv }}
+            - name: OKAREO_STANDALONE_AUTH_MODE
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "okareo-standalone.fullname" . }}-config
+                  key: OKAREO_STANDALONE_AUTH_MODE
+            {{- end }}
             {{- if .Values.frontend.edgeHeaderBufferTuning.enabled }}
             - name: CLIENT_HEADER_BUFFER_SIZE
               value: {{ .Values.frontend.edgeHeaderBufferTuning.clientHeaderBufferSize | quote }}
