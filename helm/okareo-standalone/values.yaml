@@ -6,11 +6,11 @@ imagePullSecrets: []
 images:
   frontend:
     repository: okareoartifacts/appfront
-    tag: v0.0.24
+    tag: v0.0.25
     pullPolicy: IfNotPresent
   services:
     repository: okareoartifacts/appservices
-    tag: v0.0.29
+    tag: v0.0.30
     pullPolicy: IfNotPresent
   db:
     repository: postgres
