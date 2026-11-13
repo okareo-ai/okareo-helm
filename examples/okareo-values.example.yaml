@@ -3,9 +3,9 @@
 
 images:
   frontend:
-    tag: v0.0.24
+    tag: v0.0.25
   services:
-    tag: v0.0.29
+    tag: v0.0.30
 
 secrets:
   create: false
