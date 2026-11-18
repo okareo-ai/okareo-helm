@@ -3,7 +3,7 @@
 
 images:
   frontend:
-    tag: v0.0.25
+    tag: v0.0.26
   services:
     tag: v0.0.31
 
